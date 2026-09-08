@@ -92,6 +92,8 @@ struct CameraScreen: View {
                         .accessibilityHint("Starts a fresh room scan and replaces the test marker.")
                     }
 
+                    AssistantControls(assistant: controller.assistant)
+
                     Text(controller.hasSelection ? "OBJECT TRACKING CHECK · 02" : "WORLD TRACKING CHECK · 01")
                         .font(.system(.caption2, design: .monospaced))
                         .tracking(1.5)
@@ -170,6 +172,43 @@ private struct CameraView: UIViewRepresentable {
 
         private func box(_ a: CGPoint, _ b: CGPoint) -> CGRect {
             CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+        }
+    }
+}
+
+private struct AssistantControls: View {
+    @ObservedObject var assistant: AssistantCoordinator
+    @State private var showsConnection = false
+    @State private var address = "http://"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(assistant.message).font(.caption).foregroundStyle(.secondary)
+            Button("Mac assistance", systemImage: "laptopcomputer") { showsConnection = true }
+                .font(.subheadline)
+        }
+        .sheet(isPresented: $showsConnection) {
+            NavigationStack {
+                Form {
+                    Section("Nearby Mac") {
+                        TextField("http://your-mac.local:8080", text: $address)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                        Text("When connected, sampled camera images go to this nearby Mac for object tracking. Keep both devices on the same local network.")
+                            .font(.footnote)
+                        Button(assistant.connected ? "Reconnect" : "Connect") {
+                            if assistant.connect(address: address) { showsConnection = false }
+                        }
+                        if assistant.connected {
+                            Button("Disconnect") { assistant.disconnect(); showsConnection = false }
+                        }
+                        Text(assistant.message).font(.caption)
+                    }
+                }
+                .navigationTitle("Mac assistance")
+                .toolbar { Button("Done") { showsConnection = false } }
+            }
+            .presentationDetents([.medium, .large])
         }
     }
 }

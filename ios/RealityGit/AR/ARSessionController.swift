@@ -19,6 +19,7 @@ final class ARSessionController: NSObject, ObservableObject {
     @Published private(set) var selectedPosition: SIMD3<Float>?
     @Published var dragRect: CGRect?
 
+    let assistant = AssistantCoordinator()
     private let tracker = LocalObjectTracker()
     private var trackingGeneration = UUID()
     private var workerBusy = false
@@ -26,7 +27,9 @@ final class ARSessionController: NSObject, ObservableObject {
     private var lastSampleTime: TimeInterval = 0
     private var imageRect: CGRect?
     private var lastResultTime: TimeInterval = 0
+    private var resultCameraPose: simd_float4x4?
     private var marker: AnchorEntity?
+    private var lastMarkerDiagnostic: TimeInterval = -.infinity
     private var wantsRunning = false
     private var isRunning = false
     private var isStarting = false
@@ -91,6 +94,9 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     func reset() {
+        #if DEBUG
+        print("AR explicit reset")
+        #endif
         guard wantsRunning, let configuration else { return }
         invalidateSelection()
         marker?.removeFromParent()
@@ -110,10 +116,23 @@ final class ARSessionController: NSObject, ObservableObject {
         anchor.addChild(cube)
         arView.scene.addAnchor(anchor)
         marker = anchor
+        #if DEBUG
+        print("Marker placed world=\(anchor.position(relativeTo: nil)) camera=\(frame.camera.transform.columns.3) tracking=\(frame.camera.trackingState)")
+        #endif
     }
 
     private func update(from frame: ARFrame) {
         guard wantsRunning, isRunning else { return }
+        assistant.tick(now: frame.timestamp)
+        #if DEBUG
+        if let marker, frame.timestamp - lastMarkerDiagnostic >= 1 {
+            lastMarkerDiagnostic = frame.timestamp
+            let camera = frame.camera.transform.columns.3
+            let world = marker.position(relativeTo: nil)
+            let distance = simd_distance(world, SIMD3(camera.x, camera.y, camera.z))
+            print("Marker world=\(world) camera=\(camera) distance=\(distance) tracking=\(frame.camera.trackingState)")
+        }
+        #endif
         let depthAvailable = frame.sceneDepth != nil
         if hasDepth != depthAvailable { hasDepth = depthAvailable }
 
@@ -143,16 +162,20 @@ final class ARSessionController: NSObject, ObservableObject {
         }
         if status != next { status = next }
         if next.isReady, hasSelection {
-            if frame.timestamp - lastResultTime > 1 {
+            if !overlayIsFresh(in: frame) {
                 selectionRect = nil
                 selectedPosition = nil
             } else if let imageRect {
                 selectionRect = screenRect(imageRect, frame: frame)
             }
-            if !workerBusy, frame.timestamp - lastSampleTime >= 0.2,
-               let sample = FrameSample(frame: frame) {
-                lastSampleTime = frame.timestamp
-                submit(sample, selection: nil)
+            let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 0.2
+            let assistantDue = assistant.wantsSample(at: frame.timestamp)
+            if (localDue || assistantDue), let sample = FrameSample(frame: frame) {
+                if assistantDue { assistant.offer(sample, rect: nil) }
+                if localDue {
+                    lastSampleTime = frame.timestamp
+                    submit(sample, selection: nil)
+                }
             }
         } else {
             selectionRect = nil
@@ -190,6 +213,17 @@ final class ARSessionController: NSObject, ObservableObject {
         }
     }
 
+    private func overlayIsFresh(in frame: ARFrame) -> Bool {
+        guard let pose = resultCameraPose else { return false }
+        let current = frame.camera.transform
+        let translation = simd_distance(SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z),
+            SIMD3(current.columns.3.x, current.columns.3.y, current.columns.3.z))
+        let a = simd_quatf(pose), b = simd_quatf(current)
+        let rotation = 2 * acos(min(1, abs(simd_dot(a.vector, b.vector))))
+        return AssistantPolicy.overlayIsFresh(age: frame.timestamp - lastResultTime,
+            translation: Double(translation), rotationRadians: Double(rotation))
+    }
+
     private func screenRect(_ imageRect: CGRect, frame: ARFrame) -> CGRect {
         let transform = frame.displayTransform(viewRotationAngle: viewRotationAngle, viewportSize: arView.bounds.size)
         let normalized = imageRect.applying(transform)
@@ -202,7 +236,12 @@ final class ARSessionController: NSObject, ObservableObject {
             selectionMessage = "Wait for depth, then select the object again."
             return
         }
+        assistant.resetSelection()
+        resultCameraPose = nil
         trackingGeneration = UUID()
+        #if DEBUG
+        print("Selection generation invalidated/replaced: \(trackingGeneration)")
+        #endif
         hasSelection = true
         imageRect = nil
         selectionRect = nil
@@ -219,7 +258,12 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func invalidateSelection() {
+        assistant.resetSelection()
+        resultCameraPose = nil
         trackingGeneration = UUID()
+        #if DEBUG
+        print("Selection generation invalidated/replaced: \(trackingGeneration)")
+        #endif
         pendingSelection = nil
         hasSelection = false
         imageRect = nil
@@ -235,13 +279,21 @@ final class ARSessionController: NSObject, ObservableObject {
         Task {
             let result = await tracker.process(sample, selection: selection, generation: generation)
             workerBusy = false
+            #if DEBUG
+            print("Local Vision completed age=\((arView.session.currentFrame?.timestamp ?? sample.timestamp) - sample.timestamp)s currentGeneration=\(generation == trackingGeneration) confidence=\(result.confidence) result=\(result.message)")
+            #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
                 lastResultTime = sample.timestamp
+                resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect
-                selectedPosition = result.worldPosition
+                assistant.offer(sample, rect: result.rect)
+                selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
                 selectionMessage = result.message
-                selectionRect = result.rect.map { screenRect($0, frame: latest) }
+                selectionRect = overlayIsFresh(in: latest) ? result.rect.map { screenRect($0, frame: latest) } : nil
+                #if DEBUG
+                print("Local Vision age=\(latest.timestamp - sample.timestamp)s overlay=\(selectionRect != nil) confidence=\(result.confidence) result=\(result.message)")
+                #endif
             }
             if wantsRunning, let pendingSelection {
                 self.pendingSelection = nil
@@ -257,6 +309,9 @@ extension ARSessionController: @preconcurrency ARSessionDelegate {
     }
 
     func sessionWasInterrupted(_ session: ARSession) {
+        #if DEBUG
+        print("AR interrupted")
+        #endif
         guard wantsRunning else { return }
         invalidateSelection()
         marker?.isEnabled = false
