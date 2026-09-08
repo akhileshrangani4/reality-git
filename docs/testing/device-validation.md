@@ -1,5 +1,17 @@
 # Device validation
 
+## Current checkpoint — captured Gaussian preview
+
+- Phone build `4e30392`: signed build, installation, and launch pass. User confirms the captured shape appears when the remembered-shape preview is enabled. Device logs confirm native Gaussian resources with 846 and 1,536 points.
+- The original reference now survives local tracking loss, interruption, and reselection. Current geometry expires separately. Absence requires repeated depth evidence that the old region is visible and empty; loss of tracking alone does not establish absence.
+- Server `baaec84`: 26 tests and scoped review pass. Live Astra logs include reference labels and comparison verdicts of `same`, `different`, and `uncertain`; uncertain candidates retry with fresh crops and bounded backoff. This verifies live provider use, not reliable physical reacquisition.
+- Phone `4e30392`: 36 XCTest and 2 Swift Testing tests pass. Tight-selection follow-up `52a9d7e`: 38 XCTest and 2 Swift Testing tests, native build, and signed build pass. It is not installed yet, to preserve the user's active captured reference during the movement check.
+- User's next physical test, preview off and object moved 20–30 cm: only the red shape appears. The original reference is retained, but the automatic current green overlay is still failing. Restoration and sustained anchor accuracy remain unverified; this is not an end-to-end pass.
+- Logs distinguish two remaining gates: Mac `.tracked` replies around 0.54–0.59 do not meet the phone's 0.6 recovery threshold, and healthy local 2D tracks can lack supported depth. Thresholds have not been lowered to turn uncertain evidence into a pass.
+- Tight-box review found a slanted support plane could be mistaken for foreground at an image corner. Follow-up `cd4728e` accounts for background slope; independent reproduction rejects three slanted-plane fixtures and retains all 256 points of raised-object counterparts. 39 XCTest and 2 Swift Testing checks plus native build pass; scoped review is clean.
+
+The entries below record earlier checkpoints, including failures that led to these changes.
+
 ## September 8, 2026 — AR foundation
 
 - Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0.
