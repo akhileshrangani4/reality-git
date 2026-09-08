@@ -32,3 +32,31 @@ A successful compile does not establish real-world geometry or visual correctnes
 - On-device checks pending: tap/box alignment in portrait and landscape, stationary-object position drift, fast motion, ambiguous foreground masks, occlusion, reselection during processing, and background/resume.
 - Vision starts with a 5 Hz sampling cap; frame rate, latency, memory and thermal behavior are not yet measured.
 - Movement diffs, Mac assistance, Gaussian capture/rendering and Astra integration are still pending.
+
+## First physical-device installation
+
+- Connected iPhone 15 Pro reports iOS 27.0, build 24A5430a; Developer Mode enabled.
+- Pairing: PASS. Signed Debug build using the existing development team: PASS. Installation: PASS.
+- Initial launch rejected by iOS with developer-trust/security error. Local code-signature verification passed; the provisioning profile includes this device. User developer trust pending.
+- No claim yet that camera, depth, world anchor or object tracking works on the device.
+
+## Launch and initial tracking feedback
+
+- After developer trust, launch reached a TCC abort: the packaged Info.plist lacked NSCameraUsageDescription. Xcode had migrated explicit plist keys into generated build settings while the first device build was underway.
+- Rebuilt after migration, verified the packaged camera description, installed and launched: PASS. Camera image and DEPTH READY observed on the physical phone.
+- User reported tap selection briefly showed a box then became uncertain. Local Vision state was recreated from rectangles each frame. Commit a021fea initializes the sequence on the selected image and retains returned tracking observations.
+- a021fea unsigned build, signed device build, packaged camera-description check, installation and launch: PASS. Focused code review found no additional defect in this patch. Sustained tracking and world-anchor stability still need user confirmation.
+
+## Instrumented device run (147e5f0)
+
+- Signed build/install/launch PASS; camera and depth available.
+- User reports the floating test cube appears to drift. Recorded world coordinates remained constant across five marker samples while camera translation changed by approximately 15 cm and ARKit reported normal tracking. The cube is placed one meter along the initial view, not on the visible desk; apparent parallax against a closer surface may contribute. This is not proof of physical anchoring accuracy; surface-aligned visual verification remains pending.
+- After Vision continuity fix, consecutive successful local observations recorded. Successful source-result ages in this sampled run were generally about 50 ms, with initial selections slower. This is observation age from camera timestamps, not a rendering-FPS measurement.
+- Some taps still miss the foreground mask; user should be able to retry or draw a box. Occlusion/recovery, position drift, and sustained long-session behavior remain unverified.
+
+## Task 3 connection smoke
+
+- Launched the Mac service explicitly for LAN use. Real HTTP GET /health returns200 with status ok; malformed POST /observe returns400.
+- Shared Wi-Fi blocked reachability: probes to the phone returned “Communication prohibited by filter”; phone Safari could not reach the Mac health endpoint. Switching the Mac to the phone's Personal Hotspot resolved transport: sustained phone POST /observe requests arrived at approximately two per second. This verifies request delivery, not tracking accuracy or recovery.
+- User reports tracking stops at about arm's length and does not recover on approach. Local mask-dropout handling is being revised to keep a still-confident temporal 2D track while withholding unreliable metric geometry. No claim that distance/recovery is fixed yet.
+- Client fixes e625a6f and debug diagnostics 968d95e built, installed, and pushed. Independent review passed the bounded encoding lifecycle, endpoint reselection, and mask-dropout changes. On the hotspot, the user still reports losing tracking when backing away. True Vision confidence loss remains terminal in this version; Mac evidence is stored but does not yet recover local tracking.
