@@ -65,6 +65,6 @@ A successful compile does not establish real-world geometry or visual correctnes
 
 ## Movement proxy milestone (bd07fac)
 
-- Immutable reference, ordered masked positions, and red/green world-space boxes implemented. Independent review passed the bounded movement/restoration scope; 26 core XCTest tests plus wire test passed, signed build/install/launch passed.
+- Immutable reference, ordered masked positions, and red/green world-space boxes implemented. Independent review passed the bounded movement/restoration scope; 26 core XCTest tests plus wire test passed, signed build/install passed. Automatic launch was blocked because the phone was locked; user asked to unlock and open the installed build.
 - Move threshold 15 cm; restore within 8 cm; three distinct observations spanning at least 0.5 seconds. Green expires after 0.5 seconds without reliable geometry, red persists after a confirmed move, and AR uncertainty hides both.
-- User requested test: wait for Reference saved, move 20–30 cm, then restore. Physical result pending. Removal detection and Gaussian appearance are not implemented by this increment.
+- User test: neither overlay appeared. Subsequent screenshot shows Reference saved / current position uncertain and Mac candidate / identity unconfirmed. No move was confirmed in this observation. User asked to retry slow in-frame movement; this remains a failed/incomplete physical movement check, not a rendering pass. Removal detection and Gaussian appearance are not implemented by this increment.
