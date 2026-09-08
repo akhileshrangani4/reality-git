@@ -25,13 +25,27 @@ final class AssistantCoordinator: ObservableObject {
         let edge: Int
     }
     private lazy var worker = LatestAsyncWorker<Job, DetectionReply>(operation: { job in
-        let jpeg = try await Task.detached(priority: .utility) {
-            try Self.encode(job.source.frame, longEdge: job.edge)
-        }.value
+        let jpeg: Data
+        do {
+            jpeg = try await Task.detached(priority: .utility) {
+                try Self.encode(job.source.frame, longEdge: job.edge)
+            }.value
+        } catch {
+            Self.logFailure(error, stage: "encode")
+            throw error
+        }
         try Task.checkCancellation()
-        guard CACurrentMediaTime() - job.key.captureTime <= 5 else { throw CancellationError() }
-        return try await job.client.submit(FrameRequest(key: job.key, jpeg: jpeg,
-            seedRect: job.reference ? job.source.seed : nil, isReference: job.reference))
+        guard CACurrentMediaTime() - job.key.captureTime <= 5 else {
+            Self.logFailure(CancellationError(), stage: "source expired before network")
+            throw CancellationError()
+        }
+        do {
+            return try await job.client.submit(FrameRequest(key: job.key, jpeg: jpeg,
+                seedRect: job.reference ? job.source.seed : nil, isReference: job.reference))
+        } catch {
+            Self.logFailure(error, stage: "network")
+            throw error
+        }
     }, completion: { [weak self] job, result in self?.complete(job, result: result) })
     private var lastSampleTime: Double = -.infinity
     private var lastAcceptedTime: Double = -.infinity
@@ -115,6 +129,13 @@ final class AssistantCoordinator: ObservableObject {
         case .failure:
             message = "Mac unavailable · local tracking continues"
         }
+    }
+    nonisolated private static func logFailure(_ error: any Error, stage: String) {
+        #if DEBUG
+        let failure = error as NSError
+        // Do not log descriptions/userInfo: they may include URLs or payloads.
+        print("Mac failure stage=\(stage) domain=\(failure.domain) code=\(failure.code)")
+        #endif
     }
     nonisolated private static func encode(_ sample: FrameSample, longEdge: Int) throws -> Data {
         let image = CIImage(cvPixelBuffer: sample.image)
