@@ -8,8 +8,18 @@ struct CameraScreen: View {
 
     var body: some View {
         ZStack {
-            CameraView(arView: controller.arView)
+            CameraView(controller: controller)
                 .ignoresSafeArea()
+
+            if let rect = controller.dragRect ?? controller.selectionRect {
+                Rectangle()
+                    .strokeBorder(.mint, style: StrokeStyle(lineWidth: 2, dash: controller.dragRect == nil ? [] : [6, 4]))
+                    .frame(width: max(0, rect.width), height: max(0, rect.height))
+                    .position(x: rect.midX, y: rect.midY)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
 
             LinearGradient(
                 colors: [.black.opacity(0.65), .clear, .black.opacity(0.8)],
@@ -43,7 +53,7 @@ struct CameraScreen: View {
                             .fill(controller.status.isReady ? Color.mint : Color.orange)
                             .frame(width: 7, height: 7)
                             .accessibilityHidden(true)
-                        Text(controller.status.title)
+                        Text(controller.hasSelection && controller.status.isReady ? "Object tracking" : controller.status.title)
                             .font(.headline)
                         Spacer()
                         if controller.hasDepth {
@@ -53,10 +63,16 @@ struct CameraScreen: View {
                         }
                     }
 
-                    Text(controller.status.message)
+                    Text(controller.hasSelection && controller.status.isReady ? controller.selectionMessage : controller.status.message)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if controller.status.isReady && !controller.hasSelection {
+                        Text("Tap an object, or draw a box around it.")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.mint)
+                    }
 
                     if controller.status == .cameraDenied {
                         Button("Open Settings", systemImage: "gearshape") {
@@ -76,7 +92,7 @@ struct CameraScreen: View {
                         .accessibilityHint("Starts a fresh room scan and replaces the test marker.")
                     }
 
-                    Text("WORLD TRACKING CHECK · 01")
+                    Text(controller.hasSelection ? "OBJECT TRACKING CHECK · 02" : "WORLD TRACKING CHECK · 01")
                         .font(.system(.caption2, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(.tertiary)
@@ -104,8 +120,56 @@ struct CameraScreen: View {
 }
 
 private struct CameraView: UIViewRepresentable {
-    let arView: ARView
+    let controller: ARSessionController
 
-    func makeUIView(context: Context) -> ARView { arView }
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
+
+    func makeUIView(context: Context) -> ARView {
+        let view = controller.arView
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:)))
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
+        tap.require(toFail: pan)
+        view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(pan)
+        return view
+    }
+
     func updateUIView(_ uiView: ARView, context: Context) {}
+
+    @MainActor
+    final class Coordinator: NSObject {
+        let controller: ARSessionController
+        private var start: CGPoint?
+
+        init(controller: ARSessionController) { self.controller = controller }
+
+        @objc func tap(_ gesture: UITapGestureRecognizer) {
+            controller.select(point: gesture.location(in: controller.arView))
+        }
+
+        @objc func pan(_ gesture: UIPanGestureRecognizer) {
+            let current = gesture.location(in: controller.arView)
+            switch gesture.state {
+            case .began:
+                start = current
+            case .changed:
+                guard let start else { return }
+                controller.dragRect = box(start, current)
+            case .ended:
+                defer { start = nil; controller.dragRect = nil }
+                guard let start else { return }
+                let rect = box(start, current)
+                if rect.width >= 20 && rect.height >= 20 { controller.select(rect: rect) }
+            case .cancelled, .failed:
+                start = nil
+                controller.dragRect = nil
+            default:
+                break
+            }
+        }
+
+        private func box(_ a: CGPoint, _ b: CGPoint) -> CGRect {
+            CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+        }
+    }
 }

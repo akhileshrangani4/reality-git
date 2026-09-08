@@ -21,3 +21,14 @@
 9. Test camera denial and Settings recovery. Record actual outcomes here, including failures.
 
 A successful compile does not establish real-world geometry or visual correctness. Device signing and all physical checks remain pending.
+
+## Object selection checkpoint
+
+- Tap selection or a drawn box seeds foreground instance segmentation and Vision tracking.
+- Masked, confidence-filtered LiDAR samples produce a median visible-surface position in the matching camera frame's world coordinates. This estimate can shift as different surfaces become visible.
+- Native camera image coordinates remain unchanged; ARKit's iOS 27 rotation-aware display transform maps touches and overlays.
+- Nine core tests pass: camera axes, invalid depth/calibration, depth-to-image mapping, robust median, image rotation, cropping, invalid transforms, and Vision's coordinate origin.
+- Unsigned generic-device Debug build: PASS.
+- On-device checks pending: tap/box alignment in portrait and landscape, stationary-object position drift, fast motion, ambiguous foreground masks, occlusion, reselection during processing, and background/resume.
+- Vision starts with a 5 Hz sampling cap; frame rate, latency, memory and thermal behavior are not yet measured.
+- Movement diffs, Mac assistance, Gaussian capture/rendering and Astra integration are still pending.

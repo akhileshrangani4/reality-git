@@ -24,7 +24,7 @@
 
 ## Starting point and choices
 
-The repository contains documentation only. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the user is installing iOS 27 beta 8 on the iPhone, with completion not yet verified. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
+Implementation has started; see task status below. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the user is installing iOS 27 beta 8 on the iPhone, with completion not yet verified. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
 
 Keep one integrated plan because the Mac and phone jointly implement a single interaction. Every task below has its own testable result and commit. Code blocks define essential contracts or algorithms, not complete framework boilerplate. Read the installed SDK declarations before implementing framework calls.
 
@@ -81,9 +81,9 @@ arView.session.run(configuration)
 
 **Files:** Create `Packages/RealityGitCore/Package.swift`, `Sources/RealityGitCore/Models.swift`, `Sources/RealityGitCore/Projection.swift`, `Tests/RealityGitCoreTests/ProjectionTests.swift` under that package; create `ios/RealityGit/Tracking/ObjectSelector.swift`, `LocalObjectTracker.swift`, `ios/RealityGit/AR/FrameExtractor.swift`; modify CameraScreen.
 
-**Interfaces:** `ObjectSelector` produces a normalized image rectangle. `LocalObjectTracker.start(rect:image:)` seeds Vision; `observe(image:)` returns a rectangle and confidence or nil. `Projection.unproject(u:v:depth:fx:fy:cx:cy:) -> SIMD3<Float>` returns ARKit camera coordinates. All frame images use one documented upright orientation; intrinsics and image/depth mappings must follow that transform.
+**Interfaces:** `ObjectSelector` produces a normalized image rectangle. `LocalObjectTracker.start(rect:image:)` seeds Vision; `observe(image:)` returns a rectangle and confidence or nil. `Projection.unproject(u:v:depth:fx:fy:cx:cy:) -> SIMD3<Float>` returns ARKit camera coordinates. All frame images use the native camera image orientation, passed to Vision as `.up`, with matching unrotated intrinsics/depth. Screen selection and overlays use ARKit display transforms; this avoids rotating pixels without rotating calibration.
 
-- [ ] Define value types for observations and add the geometry test before implementing projection:
+- [x] Define value types for observations and add the geometry test before implementing projection:
 
 ```swift
 // Shared models; UUID fields identify the selected object and AR coordinate session.
@@ -101,16 +101,18 @@ func testOpticalCenterFacesNegativeZ() {
 }
 ```
 
-- [ ] Run core tests and observe the missing implementation failure. Implement camera projection and test an off-center pixel plus rejection of nonfinite/nonpositive depths at the caller:
+- [x] Run core tests and observe the missing implementation failure. Implement camera projection and test an off-center pixel plus rejection of nonfinite/nonpositive depths at the caller:
 
 ```swift
 return SIMD3((u - cx) * depth / fx, -(v - cy) * depth / fy, -depth)
 ```
 
-- [ ] Implement tap-to-select using a foreground instance mask; allow a drawn rectangle to disambiguate or recover from no mask. Use `VNGenerateForegroundInstanceMaskRequest` and `VNTrackObjectRequest` after inspecting their SDK APIs. Do not silently choose an unrelated foreground instance.
-- [ ] Copy only needed buffers off the AR callback and serialize Vision work with at most one pending image. Use masked depth samples, depth confidence, and robust median position; do not use the rectangle's background as object depth. If segmentation is unavailable, show uncertain depth rather than accepting contaminated geometry.
-- [ ] Apply the matching frame's camera transform to camera-space points. Test image corner transformations at portrait/landscape orientations and different depth resolutions. Run core tests and compile the app.
+- [x] Implement tap-to-select using a foreground instance mask; allow a drawn rectangle to disambiguate or recover from no mask. Use `VNGenerateForegroundInstanceMaskRequest` and `VNTrackObjectRequest` after inspecting their SDK APIs. Do not silently choose an unrelated foreground instance.
+- [x] Copy only needed buffers off the AR callback and serialize Vision work with at most one pending image. Use masked depth samples, depth confidence, and robust median position; do not use the rectangle's background as object depth. If segmentation is unavailable, show uncertain depth rather than accepting contaminated geometry.
+- [x] Apply the matching frame's camera transform to camera-space points. Test image corner transformations at portrait/landscape orientations and different depth resolutions. Run core tests and compile the app.
 - [ ] On the phone select and follow a stationary object while moving the camera. Record world-position stability, then commit `feat: select and locate one object with Vision and depth`.
+
+**Execution status:** Implemented selection within the camera coordinator and immutable extraction in `FrameSample.swift` instead of separate selector/extractor wrappers. Nine core geometry tests and the unsigned device build pass. Vision sampling is capped at 5 Hz with one worker and one replaceable pending selection; actual throughput and position stability require the phone. Position is the median visible surface, not the full object centroid.
 
 ### Task 3: Continuous Mac tracking assistance
 
