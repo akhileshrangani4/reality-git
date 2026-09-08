@@ -27,4 +27,4 @@ Splat capture quality and reconstruction speed are prototype risks. Start with a
 
 One object, one room, one AR session. Use confidence thresholds and consecutive observations to suppress false movement and absence reports. Defer cross-session persistence, full-room reconstruction, and history browsing.
 
-See [BUILD_PROMPT.md](BUILD_PROMPT.md) for the implementation sequence. Implementation has not started yet.
+See [BUILD_PROMPT.md](BUILD_PROMPT.md) for the implementation sequence. The iOS AR foundation is implemented and compiles with Xcode 27. Physical-device validation is pending. Open `ios/RealityGit.xcodeproj`; see [device setup and validation](docs/testing/device-validation.md).

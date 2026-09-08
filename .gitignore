@@ -14,3 +14,7 @@ work/
 
 # Isolated implementation checkouts
 .worktrees/
+
+# Swift package build products
+.build/
+.swiftpm/

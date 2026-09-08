@@ -59,8 +59,8 @@ No simulator runtime is required. The unsigned generic-device build checks compi
 
 **Interface:** `@MainActor final class ARSessionController` owns `ARView`, exposes `start()`, `reset()`, and published tracking status. One ARSession for the entire app.
 
-- [ ] Create the native app target and shared scheme. Add camera usage text; ignore Swift build directories and local signing settings. Keep signing credentials out of git.
-- [ ] Configure capability checks and depth:
+- [x] Create the native app target and shared scheme. Add camera usage text; ignore Swift build directories and local signing settings. Keep signing credentials out of git.
+- [x] Configure capability checks and depth:
 
 ```swift
 let configuration = ARWorldTrackingConfiguration()
@@ -71,9 +71,11 @@ configuration.frameSemantics.insert(.sceneDepth)
 arView.session.run(configuration)
 ```
 
-- [ ] Add a temporary test cube anchored one meter along the camera's viewing direction after tracking becomes normal. Show permission denial and unavailable depth as visible states.
+- [x] Add a temporary test cube anchored one meter along the camera's viewing direction after tracking becomes normal. Show permission denial and unavailable depth as visible states.
 - [ ] Build with the app command above. On iPhone, walk around the cube, interrupt the session, and confirm tracking status changes. Record whether its position remains stable. No automated test for SwiftUI scaffolding.
-- [ ] Commit as `feat: establish AR session and stable test anchor`.
+- [x] Commit as `feat: establish AR session and stable test anchor`.
+
+**Execution status:** Generic-device Debug build passes. Physical checks remain pending; task 1 is not yet device-validated.
 
 ### Task 2: Select an object and obtain metric observations
 
