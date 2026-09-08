@@ -20,6 +20,8 @@ final class ARSessionController: NSObject, ObservableObject {
     @Published var dragRect: CGRect?
 
     let assistant = AssistantCoordinator()
+    let objectSession = SessionCoordinator()
+    private let diffRenderer = DiffRenderer()
     private let tracker = LocalObjectTracker()
     private var trackingGeneration = UUID()
     private var workerBusy = false
@@ -126,6 +128,7 @@ final class ARSessionController: NSObject, ObservableObject {
     private func update(from frame: ARFrame) {
         guard wantsRunning, isRunning else { return }
         assistant.tick(now: frame.timestamp)
+        objectSession.expire(now: frame.timestamp)
         #if DEBUG
         if let marker, frame.timestamp - lastMarkerDiagnostic >= 1 {
             lastMarkerDiagnostic = frame.timestamp
@@ -187,7 +190,11 @@ final class ARSessionController: NSObject, ObservableObject {
         } else {
             selectionRect = nil
             selectedPosition = nil
+            objectSession.loseCurrent()
         }
+        diffRenderer.update(in: arView, reference: objectSession.reference, current: objectSession.current,
+            showRed: objectSession.state == .moved, showGreen: objectSession.state == .moved,
+            reliable: next.isReady)
     }
 
     func select(point: CGPoint) {
@@ -244,6 +251,8 @@ final class ARSessionController: NSObject, ObservableObject {
             return
         }
         assistant.resetSelection()
+        objectSession.reset()
+        diffRenderer.reset()
         resultCameraPose = nil
         trackingGeneration = UUID()
         #if DEBUG
@@ -266,6 +275,8 @@ final class ARSessionController: NSObject, ObservableObject {
 
     private func invalidateSelection() {
         assistant.resetSelection()
+        objectSession.reset()
+        diffRenderer.reset()
         resultCameraPose = nil
         trackingGeneration = UUID()
         #if DEBUG
@@ -284,6 +295,7 @@ final class ARSessionController: NSObject, ObservableObject {
         workerBusy = true
         let generation = trackingGeneration
         let recovery = assistant.recoveryEvidence()
+        let key = objectSession.key(for: sample)
         Task {
             let result = await tracker.process(sample, selection: selection, generation: generation, recovery: recovery)
             workerBusy = false
@@ -297,6 +309,7 @@ final class ARSessionController: NSObject, ObservableObject {
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
+                objectSession.ingest(result, key: key, now: latest.timestamp)
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect

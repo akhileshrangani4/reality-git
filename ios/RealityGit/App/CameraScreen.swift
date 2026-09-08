@@ -84,14 +84,15 @@ struct CameraScreen: View {
                         .tint(.mint)
                         .foregroundStyle(.black)
                     } else if controller.canReset {
-                        Button("Place a new marker", systemImage: "arrow.counterclockwise") {
+                        Button("Start over", systemImage: "arrow.counterclockwise") {
                             controller.reset()
                         }
                         .buttonStyle(.bordered)
                         .tint(.white)
-                        .accessibilityHint("Starts a fresh room scan and replaces the test marker.")
+                        .accessibilityHint("Clears the reference and starts a fresh room scan.")
                     }
 
+                    ReferenceStatus(session: controller.objectSession)
                     AssistantControls(assistant: controller.assistant)
 
                     Text(controller.hasSelection ? "OBJECT TRACKING CHECK · 02" : "WORLD TRACKING CHECK · 01")
@@ -209,6 +210,19 @@ private struct AssistantControls: View {
                 .toolbar { Button("Done") { showsConnection = false } }
             }
             .presentationDetents([.medium, .large])
+        }
+    }
+}
+
+private struct ReferenceStatus: View {
+    @ObservedObject var session: SessionCoordinator
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(session.message).font(.subheadline.weight(.medium)).foregroundStyle(.mint)
+            if session.reference != nil {
+                Text("Approximate bounds · removal detection pending")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }

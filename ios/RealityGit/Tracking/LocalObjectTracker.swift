@@ -15,12 +15,13 @@ struct LocalTrackingResult: Sendable {
     let rect: CGRect?
     let worldPosition: SIMD3<Float>?
     let referenceRect: CGRect?
+    let worldBounds: SIMD3<Float>?
     let confidence: Float
     let message: String
     init(rect: CGRect?, worldPosition: SIMD3<Float>?, confidence: Float, message: String,
-         referenceRect: CGRect? = nil) {
+         referenceRect: CGRect? = nil, worldBounds: SIMD3<Float>? = nil) {
         self.rect = rect; self.worldPosition = worldPosition
-        self.confidence = confidence; self.message = message; self.referenceRect = referenceRect
+        self.confidence = confidence; self.message = message; self.referenceRect = referenceRect; self.worldBounds = worldBounds
     }
 }
 
@@ -74,7 +75,7 @@ actor LocalObjectTracker {
             if recovered != nil {
                 // Recovery can supply current mask-backed geometry, but cannot replace the reference.
                 return LocalTrackingResult(rect: result.rect, worldPosition: result.worldPosition,
-                    confidence: result.confidence, message: result.message, referenceRect: nil)
+                    confidence: result.confidence, message: result.message, referenceRect: nil, worldBounds: result.worldBounds)
             }
             return result
         } catch {
@@ -212,9 +213,18 @@ actor LocalObjectTracker {
                 message: "Object selected. Move closer for a reliable depth measurement.")
         }
         let world = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
+        let worldPoints = points.map { point in
+            let value = sample.cameraToWorld * SIMD4(point.x, point.y, point.z, 1)
+            return SIMD3(value.x, value.y, value.z)
+        }
+        func extent(_ values: [Float]) -> Float {
+            let sorted = values.sorted()
+            return max(0.03, sorted[Int(Double(sorted.count - 1) * 0.95)] - sorted[Int(Double(sorted.count - 1) * 0.05)])
+        }
+        let bounds = SIMD3(extent(worldPoints.map(\.x)), extent(worldPoints.map(\.y)), extent(worldPoints.map(\.z)))
         diagnostic("mask and depth available")
         return supportedResult(predicted: predicted, maskRect: rect, position: SIMD3(world.x, world.y, world.z),
-            confidence: trackingConfidence, message: "Following the selected object. Move slowly around it to check stability.")
+            confidence: trackingConfidence, message: "Following the selected object. Move slowly around it to check stability.", bounds: bounds)
     }
 
     private var lastRecoveryDiagnostic: String?
@@ -232,10 +242,10 @@ actor LocalObjectTracker {
         #endif
     }
     private func supportedResult(predicted: CGRect?, maskRect: CGRect?, position: SIMD3<Float>?,
-                                 confidence: Float, message: String) -> LocalTrackingResult {
+                                 confidence: Float, message: String, bounds: SIMD3<Float>? = nil) -> LocalTrackingResult {
         let evidence = LocalTrackingEvidence(confidentTrackedRect: predicted, maskRect: maskRect, maskPosition: position)
         return LocalTrackingResult(rect: evidence.displayRect, worldPosition: evidence.worldPosition,
-            confidence: confidence, message: message, referenceRect: evidence.referenceRect)
+            confidence: confidence, message: message, referenceRect: evidence.referenceRect, worldBounds: bounds)
     }
     private func maskUnavailable(_ predicted: CGRect?, confidence: Float, reason: String) -> LocalTrackingResult {
         diagnostic(reason)
