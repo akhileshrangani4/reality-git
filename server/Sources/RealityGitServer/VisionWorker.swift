@@ -131,6 +131,12 @@ actor VisionWorker {
     private func launch(_ submission: Submission) {
         let localizer = self.localizer
         let immutableReference = reference
+        guard submission.request.isReference || immutableReference != nil else {
+            processingFinished(submission, .success(LocalizationResult(
+                rect: nil, confidence: 0, candidateID: nil, status: .notFound
+            )))
+            return
+        }
         Task.detached(priority: .userInitiated) {
             let result = Result { try localizer(submission.request, immutableReference) }
             await self.processingFinished(submission, result)

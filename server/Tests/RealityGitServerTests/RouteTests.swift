@@ -63,20 +63,22 @@ final class RouteTests: XCTestCase {
     func testPendingObservationIsReplaceable() async throws {
         let gate = Gate()
         let worker = VisionWorker(timeout: .seconds(2), validateImageMetadata: false, localizer: { request, _ in
-            if request.key.frameID == 1 { gate.wait() }
+            if request.key.frameID == 2 { gate.wait() }
             return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
         })
-        let first = Task { try await worker.observe(FrameRequest(key: testKey(frame: 1), jpeg: Data([1]))) }
+        _ = try await worker.observe(FrameRequest(key: testKey(frame: 1), jpeg: Data([1]),
+                                                  seedRect: [0.1, 0.1, 0.2, 0.2], isReference: true))
+        let first = Task { try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: Data([1]))) }
         gate.waitUntilEntered()
-        let replaced = Task { try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: Data([1]))) }
-        while await worker.pendingFrameIDForTesting() != 2 { await Task.yield() }
-        let newest = Task { try await worker.observe(FrameRequest(key: testKey(frame: 3), jpeg: Data([1]))) }
+        let replaced = Task { try await worker.observe(FrameRequest(key: testKey(frame: 3), jpeg: Data([1]))) }
         while await worker.pendingFrameIDForTesting() != 3 { await Task.yield() }
+        let newest = Task { try await worker.observe(FrameRequest(key: testKey(frame: 4), jpeg: Data([1]))) }
+        while await worker.pendingFrameIDForTesting() != 4 { await Task.yield() }
         gate.open()
         _ = try await first.value
         await XCTAssertThrowsErrorAsync { _ = try await replaced.value }
         let newestReply = try await newest.value
-        XCTAssertEqual(newestReply.key.frameID, 3)
+        XCTAssertEqual(newestReply.key.frameID, 4)
     }
 
     func testReferenceIsImmutableUntilNewSelection() async throws {
@@ -103,18 +105,20 @@ final class RouteTests: XCTestCase {
         let calls = LockedValues<UInt64>()
         let worker = VisionWorker(timeout: .milliseconds(50), validateImageMetadata: false, localizer: { request, _ in
             calls.append(request.key.frameID)
-            if request.key.frameID == 1 { gate.wait() }
+            if request.key.frameID == 2 { gate.wait() }
             return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
         })
-        let active = Task { try await worker.observe(FrameRequest(key: testKey(frame: 1), jpeg: Data([1]))) }
+        _ = try await worker.observe(FrameRequest(key: testKey(frame: 1), jpeg: Data([1]),
+                                                  seedRect: [0.1, 0.1, 0.2, 0.2], isReference: true))
+        let active = Task { try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: Data([1]))) }
         gate.waitUntilEntered()
-        let pending = Task { try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: Data([1]))) }
-        while await worker.pendingFrameIDForTesting() != 2 { await Task.yield() }
+        let pending = Task { try await worker.observe(FrameRequest(key: testKey(frame: 3), jpeg: Data([1]))) }
+        while await worker.pendingFrameIDForTesting() != 3 { await Task.yield() }
         try await Task.sleep(for: .milliseconds(80))
         gate.open()
         await XCTAssertThrowsErrorAsync { _ = try await active.value }
         await XCTAssertThrowsErrorAsync { _ = try await pending.value }
-        XCTAssertEqual(calls.values, [1])
+        XCTAssertEqual(calls.values, [1, 2])
     }
 
     func testFailedReferenceDoesNotBecomeImmutableReference() async throws {
@@ -193,6 +197,39 @@ final class RouteTests: XCTestCase {
                                   seedRect: seed, isReference: true)
         await XCTAssertThrowsErrorAsync { _ = try await worker.observe(badNew) }
         _ = try await worker.observe(FrameRequest(key: testKey(frame: 2, captureTime: 3), jpeg: jpeg))
+    }
+
+    func testNonReferenceCannotUseOldEngineWhenPendingReferenceTimesOut() async throws {
+        let gate = Gate()
+        let calls = LockedValues<(UInt8, UInt64)>()
+        let worker = VisionWorker(timeout: .milliseconds(50), validateImageMetadata: false, localizer: { request, _ in
+            let object = request.key.objectID.uuidString.hasSuffix("000002") ? UInt8(2) : UInt8(3)
+            calls.append((object, request.key.frameID))
+            if object == 2, request.key.frameID == 2 { gate.wait() }
+            return LocalizationResult(rect: request.seedRect, confidence: 1, candidateID: nil,
+                                      status: request.isReference ? .identityConfirmed : .tracked)
+        })
+        let seed = [0.1, 0.1, 0.2, 0.2]
+        _ = try await worker.observe(FrameRequest(key: testKey(object: 2, frame: 1, captureTime: 1),
+                                                  jpeg: Data([1]), seedRect: seed, isReference: true))
+        let oldActive = Task { try await worker.observe(FrameRequest(
+            key: testKey(object: 2, frame: 2, captureTime: 2), jpeg: Data([1]))) }
+        gate.waitUntilEntered()
+        let newReference = Task { try await worker.observe(FrameRequest(
+            key: testKey(object: 3, frame: 3, captureTime: 3), jpeg: Data([1]),
+            seedRect: seed, isReference: true)) }
+        while await worker.pendingFrameIDForTesting() != 3 { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(80))
+        let newObservation = Task { try await worker.observe(FrameRequest(
+            key: testKey(object: 3, frame: 4, captureTime: 4), jpeg: Data([1]))) }
+        while await worker.pendingFrameIDForTesting() != 4 { await Task.yield() }
+        gate.open()
+
+        await XCTAssertThrowsErrorAsync { _ = try await oldActive.value }
+        await XCTAssertThrowsErrorAsync { _ = try await newReference.value }
+        let reply = try await newObservation.value
+        XCTAssertEqual(reply.status, .notFound)
+        XCTAssertEqual(calls.values.map(\.1), [1, 2])
     }
 
 }
