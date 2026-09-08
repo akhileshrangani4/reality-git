@@ -19,6 +19,7 @@ public struct DiffReducer: Sendable {
         guard time.isFinite, time >= lastTime, lastFrame == nil || frameID > lastFrame! else { return }
         lastFrame = frameID; lastTime = time
         if time - lastEvidenceTime > 1.5 { interruptConfirmation() }
+        if pending == .absent, visibility != .visibleEmpty { interruptConfirmation() }
         let desired: DiffState?
         let duration: Double
         if let position, identityConfirmed, [position.x, position.y, position.z].allSatisfy(\.isFinite) {

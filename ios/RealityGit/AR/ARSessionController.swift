@@ -286,6 +286,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func suspendSelection() {
+        diffRenderer.hide()
         trackingGeneration = UUID()
         pendingSelection = nil
         resultCameraPose = nil
@@ -355,7 +356,7 @@ final class ARSessionController: NSObject, ObservableObject {
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
-                objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: result.rect))
+                objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: ReferenceVisibility.occupiedRect(trackedRect: result.rect, position: result.worldPosition, bounds: result.worldBounds, confidence: result.confidence)))
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect

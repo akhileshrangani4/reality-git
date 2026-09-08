@@ -9,6 +9,10 @@ final class DiffRenderer {
     private var red: AnchorEntity?
     private var green: AnchorEntity?
     private var referenceKey: ObservationKey?
+    func hide() {
+        red?.isEnabled = false
+        green?.isEnabled = false
+    }
     func reset() {
         red?.removeFromParent(); green?.removeFromParent()
         red = nil; green = nil; referenceKey = nil

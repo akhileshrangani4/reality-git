@@ -26,6 +26,14 @@ public struct ReferenceState: Sendable {
 }
 
 public enum ReferenceVisibility {
+    /// A temporal image box is not evidence of an occupied physical location.
+    public static func occupiedRect(trackedRect: CGRect?, position: SIMD3<Float>?, bounds: SIMD3<Float>?, confidence: Float) -> CGRect? {
+        guard let position, let bounds, confidence.isFinite, confidence >= 0.6,
+              [position.x, position.y, position.z, bounds.x, bounds.y, bounds.z].allSatisfy(\.isFinite),
+              bounds.x > 0, bounds.y > 0, bounds.z > 0 else { return nil }
+        return trackedRect
+    }
+
     public static func classify(differences: [Float], projectedCount: Int, totalCount: Int) -> VisibilityEvidence {
         guard totalCount >= 12, projectedCount * 5 >= totalCount * 4,
               differences.count >= 12, differences.count * 5 >= projectedCount * 4 else { return .unknown }

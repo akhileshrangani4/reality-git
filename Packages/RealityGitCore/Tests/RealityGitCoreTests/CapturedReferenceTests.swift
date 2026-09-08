@@ -16,6 +16,28 @@ final class CapturedReferenceTests: XCTestCase {
         movedCamera.columns.3.z = -0.3
         XCTAssertTrue(ForegroundDepth.allowsFallback(measuredDepth: 0.7, supportedWorld: SIMD3(0,0,-1), cameraToWorld: movedCamera))
     }
+    func testRetainedBoxWithoutSupportedGeometryDoesNotVetoAbsence() {
+        let box = CGRect(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
+        XCTAssertNil(ReferenceVisibility.occupiedRect(trackedRect: box, position: nil, bounds: nil, confidence: 0.95))
+        XCTAssertNil(ReferenceVisibility.occupiedRect(trackedRect: box, position: .zero, bounds: .one, confidence: 0.5))
+        XCTAssertEqual(ReferenceVisibility.occupiedRect(trackedRect: box, position: .zero, bounds: .one, confidence: 0.95), box)
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: 0.2, count: 100), projectedCount: 100, totalCount: 100), .visibleEmpty)
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: -0.2, count: 100), projectedCount: 100, totalCount: 100), .occluded)
+    }
+    func testEveryVisibilityInterruptionRestartsAbsenceConfirmation() {
+        for interruption in [VisibilityEvidence.visibleOccupied, .occluded, .unknown] {
+            var reducer = DiffReducer(referencePosition: .zero)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 0, frameID: 0)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 0.4, frameID: 1)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: interruption, time: 0.6, frameID: 2)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 1.1, frameID: 3)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 1.5, frameID: 4)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 1.9, frameID: 5)
+            XCTAssertEqual(reducer.state, .unchanged)
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 2.2, frameID: 6)
+            XCTAssertEqual(reducer.state, .absent)
+        }
+    }
     func testCaptureIsBounded() throws {
         let key = ObservationKey(sessionID: UUID(), objectID: UUID(), frameID: 1, captureTime: 1)
         let points = Array(repeating: CapturedPoint(position: .zero, color: .one), count: 9000)
