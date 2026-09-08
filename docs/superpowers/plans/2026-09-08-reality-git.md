@@ -6,7 +6,7 @@
 
 **Architecture:** The iPhone owns geometry, reference state, and rendering. A nearby Mac continuously assists with Vision localization, runs an existing Gaussian trainer on calibrated captures, and makes less frequent Astra requests. Shared Swift value types connect the two; no database, job broker, or cloud deployment.
 
-**Tech Stack:** Swift, SwiftUI, ARKit, RealityKit, Vision, URLSession; a macOS Swift executable with Vapor 4 for HTTP; MetalSplatter/Metal for the splat rendering stage only.
+**Tech Stack:** Swift, SwiftUI, ARKit, RealityKit, Vision, URLSession; a macOS Swift executable with Vapor 4 for HTTP; iOS 27 native RealityKit splats first after toolchain upgrade; MetalSplatter/Metal as fallback.
 
 **Spec:** [Approved design](../specs/2026-09-08-reality-git-design.md)
 
@@ -237,6 +237,8 @@ try process.run()
 - [ ] Verify the chosen output in a splat viewer, run exporter/process tests, and commit `feat: train captured object appearance with a pinned Mac engine`.
 
 ### Task 8: Render aligned red Gaussian ghosts
+
+**September 8 update:** The user is willing to install iOS 27. Before the MetalSplatter steps below, verify iOS 27 on the device and Xcode 27 availability on the Mac, then test `GaussianSplatComponent` with a small known asset. Populate its buffers using the documented GaussianSplatResource API; verify red color, opacity, metric scale and anchored camera motion. If this succeeds, implement SplatOverlay using a RealityKit entity and skip the separate Metal renderer steps. Use an iOS 27 deployment target for that prototype. The current iOS 17 baseline applies only before this decision; no upgrade has been performed. Retain MetalSplatter as the fallback if the native test fails. Record the selected path and actual OS/SDK in the alignment report.
 
 **Files:** Create iOS `Rendering/SplatOverlay.swift`, `SplatAssetLoader.swift`; modify CameraScreen, DiffRenderer and project package dependencies; add `docs/testing/splat-alignment.md`.
 

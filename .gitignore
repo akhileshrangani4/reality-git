@@ -8,3 +8,6 @@ xcuserdata/
 !.env.example
 *.p8
 *.p12
+
+# Temporary research downloads and scratch files
+work/

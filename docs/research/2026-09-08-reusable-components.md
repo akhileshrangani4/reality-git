@@ -4,7 +4,7 @@ Checked September 8, 2026. This is a repository/source review, not a benchmark o
 
 ## Recommendation
 
-Keep ARKit/LiDAR geometry and local Vision tracking. Keep MetalSplatter for the installed SDK. Evaluate Brush first for trained object appearance, with msplat as the alternative. Retain simple depth Gaussians as a preview/fallback rather than writing a reconstruction engine first. Benchmark temporal EdgeTAM on the Mac before replacing baseline Vision assistance. Do not assume a Core ML image segmenter includes video memory or identity recovery.
+Keep ARKit/LiDAR geometry and local Vision tracking. Following the user’s willingness to install iOS 27, evaluate native RealityKit splats first after upgrading the toolchain; retain MetalSplatter as the fallback. Evaluate Brush first for trained object appearance, with msplat as the alternative. Retain simple depth Gaussians as a preview/fallback rather than writing a reconstruction engine first. Benchmark temporal EdgeTAM on the Mac before replacing baseline Vision assistance. Do not assume a Core ML image segmenter includes video memory or identity recovery.
 
 No dependencies have been installed or executed during this review. Exact dependency pins should be selected by a small compatibility test, not solely by recency.
 
@@ -58,7 +58,7 @@ The [paper](https://openaccess.thecvf.com/content/CVPR2025/papers/Zhou_EdgeTAM_O
 
 ## New Apple native splat support: useful, but beyond installed SDK
 
-Apple now documents [GaussianSplatComponent](https://developer.apple.com/documentation/realitykit/gaussiansplatcomponent). Its documentation metadata specifies iOS/macOS 27 availability. The installed Xcode uses iOS SDK 26.5 and a source-interface search found no such symbol. Therefore it is not an available replacement in our current toolchain. Keep MetalSplatter unless we deliberately choose an OS/SDK upgrade. Native support still requires parsing source assets into buffers; it is not a reconstruction engine.
+Apple now documents [GaussianSplatComponent](https://developer.apple.com/documentation/realitykit/gaussiansplatcomponent). Its documentation metadata specifies iOS/macOS 27 availability. The installed Xcode uses iOS SDK 26.5 and a source-interface search found no such symbol. Therefore it is not an available replacement in our currently installed toolchain. The user subsequently confirmed willingness to install iOS 27. Apple lists iOS 27 beta 8 and Xcode 27 beta 6 in its [release catalog](https://developer.apple.com/news/releases/), and [iPhone 15 Pro is compatible](https://www.apple.com/os/ios/). Evaluate native RealityKit rendering first once the required OS/SDK is installed; keep MetalSplatter as fallback. Neither upgrade nor native rendering has been tested. Native support still requires parsing source assets into buffers; it is not a reconstruction engine.
 
 ## X findings, verified against repositories
 
@@ -82,7 +82,7 @@ Live X was read through the browser because ordinary web search returned poor re
 2. Export an interoperable Nerfstudio dataset with calibrated RGBA images, masked metric seed PLY, and explicit object/world transforms.
 3. Replace custom reconstruction as the primary path with a pinned Brush-versus-msplat compatibility evaluation; use simple depth Gaussians only for preview/fallback.
 4. Benchmark real temporal EdgeTAM on Mac after baseline tracking; adopt a worker only if it improves mask persistence within the frame/latency budget. Do not upgrade the phone OS merely to use a tiny wrapper.
-5. Keep MetalSplatter, with an asset parser and metric-alignment check on the exact selected commit.
+5. Evaluate iOS 27 native RealityKit rendering after the OS/SDK upgrade, including red tint, opacity and metric alignment. Use MetalSplatter if that test fails.
 
 ## Compatibility gate before choosing dependencies
 
