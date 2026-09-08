@@ -13,7 +13,11 @@ struct CameraScreen: View {
 
             if let rect = controller.dragRect ?? controller.selectionRect {
                 Rectangle()
-                    .strokeBorder(.mint, style: StrokeStyle(lineWidth: 2, dash: controller.dragRect == nil ? [] : [6, 4]))
+                    .fill(controller.currentScreenOverlay == nil ? Color.clear : Color.green.opacity(0.25))
+                    .overlay {
+                        Rectangle().strokeBorder(controller.currentScreenOverlay == nil ? Color.mint : Color.green,
+                            style: StrokeStyle(lineWidth: 2, dash: controller.dragRect == nil ? [] : [6, 4]))
+                    }
                     .frame(width: max(0, rect.width), height: max(0, rect.height))
                     .position(x: rect.midX, y: rect.midY)
                     .ignoresSafeArea()
@@ -92,7 +96,7 @@ struct CameraScreen: View {
                         .accessibilityHint("Clears the reference and starts a fresh room scan.")
                     }
 
-                    ReferenceStatus(session: controller.objectSession)
+                    ReferenceStatus(session: controller.objectSession, screenTrackVisible: controller.currentScreenOverlay != nil)
                     if controller.objectSession.reference != nil {
                         Text(controller.ghostStatus).font(.caption2).foregroundStyle(.secondary)
                         Toggle("Preview remembered shape", isOn: $controller.previewReference).font(.caption)
@@ -226,9 +230,10 @@ private struct AssistantControls: View {
 
 private struct ReferenceStatus: View {
     @ObservedObject var session: SessionCoordinator
+    let screenTrackVisible: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(session.message).font(.subheadline.weight(.medium)).foregroundStyle(.mint)
+            Text(screenTrackVisible ? (session.state == .absent ? "Object found · checking its position." : "Moved · following object in view; depth uncertain.") : session.message).font(.subheadline.weight(.medium)).foregroundStyle(.mint)
             if session.reference != nil {
                 Text("Captured depth shape · original reference retained")
                     .font(.caption2).foregroundStyle(.secondary)

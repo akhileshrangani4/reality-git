@@ -152,6 +152,20 @@ final class CapturedReferenceTests: XCTestCase {
             XCTAssertEqual(known.rejectionReason(distractor, confidence: 0.9), "color")
         }
     }
+    func testCurrentScreenGreenUsesOnlyFreshLocalTrackDuringConfirmedMove() {
+        func visible(state: DiffState = .moved, fresh: Bool = true, confidence: Float = 0.9, world: Bool = false, reliable: Bool = true, drawing: Bool = false) -> Bool {
+            CurrentScreenOverlay.isVisible(state: state, freshLocalTrack: fresh, confidence: confidence, hasCurrentWorldPosition: world, arReliable: reliable, drawing: drawing)
+        }
+        XCTAssertTrue(visible())
+        XCTAssertFalse(visible(state: .unchanged))
+        XCTAssertTrue(visible(state: .absent), "A freshly recovered object may have a screen location before its metric state reconciles")
+        XCTAssertFalse(visible(state: .absent, fresh: false))
+        XCTAssertFalse(visible(fresh: false), "Stale, lost or candidate-only boxes cannot show the overlay")
+        XCTAssertFalse(visible(confidence: 0.5))
+        XCTAssertFalse(visible(world: true), "Use the 3D current marker when its metric position is available")
+        XCTAssertFalse(visible(reliable: false))
+        XCTAssertFalse(visible(drawing: true))
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

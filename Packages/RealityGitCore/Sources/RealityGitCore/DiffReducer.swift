@@ -42,3 +42,11 @@ public struct DiffReducer: Sendable {
         if count >= 3, time - started >= duration { state = desired; interruptConfirmation() }
     }
 }
+
+public enum CurrentScreenOverlay {
+    public static func isVisible(state: DiffState, freshLocalTrack: Bool, confidence: Float,
+                                 hasCurrentWorldPosition: Bool, arReliable: Bool, drawing: Bool) -> Bool {
+        (state == .moved || state == .absent) && freshLocalTrack && confidence.isFinite && confidence >= 0.6 &&
+            !hasCurrentWorldPosition && arReliable && !drawing
+    }
+}

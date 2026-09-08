@@ -19,7 +19,17 @@ final class ARSessionController: NSObject, ObservableObject {
     @Published private(set) var selectionMessage = "Tap an object, or draw a box around it."
     @Published private(set) var selectionRect: CGRect?
     @Published private(set) var selectedPosition: SIMD3<Float>?
+    @Published private(set) var localTrackConfidence: Float = 0
     @Published var dragRect: CGRect?
+
+    var currentScreenOverlay: CGRect? {
+        let fresh = arView.session.currentFrame.map { overlayIsFresh(in: $0) } ?? false
+        guard CurrentScreenOverlay.isVisible(state: objectSession.state,
+            freshLocalTrack: fresh && selectionRect != nil, confidence: localTrackConfidence,
+            hasCurrentWorldPosition: objectSession.current != nil, arReliable: status.isReady,
+            drawing: dragRect != nil) else { return nil }
+        return selectionRect
+    }
 
     let assistant = AssistantCoordinator()
     let objectSession = SessionCoordinator()
@@ -286,6 +296,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func suspendSelection() {
+        localTrackConfidence = 0
         diffRenderer.hide()
         trackingGeneration = UUID()
         pendingSelection = nil
@@ -321,6 +332,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func invalidateSelection() {
+        localTrackConfidence = 0
         assistant.resetSelection()
         objectSession.reset()
         diffRenderer.reset()
@@ -359,6 +371,7 @@ final class ARSessionController: NSObject, ObservableObject {
                 objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: ReferenceVisibility.occupiedRect(trackedRect: result.rect, position: result.worldPosition, bounds: result.worldBounds, confidence: result.confidence)))
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
+                localTrackConfidence = result.confidence
                 imageRect = result.rect
                 assistant.offer(sample, rect: result.initializationRect ?? result.referenceRect)
                 selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
