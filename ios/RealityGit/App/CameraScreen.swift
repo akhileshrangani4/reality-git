@@ -180,7 +180,7 @@ private struct CameraView: UIViewRepresentable {
 private struct AssistantControls: View {
     @ObservedObject var assistant: AssistantCoordinator
     @State private var showsConnection = false
-    @State private var address = "http://"
+    @State private var address = UserDefaults.standard.string(forKey: "lastMacAddress") ?? "http://"
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(assistant.message).font(.caption).foregroundStyle(.secondary)
@@ -198,10 +198,13 @@ private struct AssistantControls: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
-                        Text("When connected, sampled camera images go to this nearby Mac for object tracking. Keep both devices on the same local network.")
+                        Text("When connected, sampled camera images go to this nearby Mac for object tracking. Keep both devices on the same local network. When your Mac server has Astra enabled, selected image crops are also sent to OpenAI.")
                             .font(.footnote)
                         Button(assistant.connected ? "Reconnect" : "Connect") {
-                            if assistant.connect(address: address) { showsConnection = false }
+                            if assistant.connect(address: address) {
+                                UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "lastMacAddress")
+                                showsConnection = false
+                            }
                         }
                         if assistant.connected {
                             Button("Disconnect") { assistant.disconnect(); showsConnection = false }

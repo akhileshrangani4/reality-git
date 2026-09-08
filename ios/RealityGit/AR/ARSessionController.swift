@@ -263,6 +263,12 @@ final class ARSessionController: NSObject, ObservableObject {
         selectionRect = nil
         selectedPosition = nil
         selectionMessage = "Finding the selected object…"
+        if case .rectangle(let box) = selection,
+           let seed = LocalTrackingEvidence.validSelectionRectangle(box) {
+            // Human-selected pixels can initialize appearance tracking before segmentation finishes.
+            assistant.offer(sample, rect: seed)
+            selectionMessage = "Object selected · finding depth."
+        }
         marker?.removeFromParent()
         marker = nil
         if workerBusy {
@@ -313,7 +319,7 @@ final class ARSessionController: NSObject, ObservableObject {
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect
-                assistant.offer(sample, rect: result.referenceRect)
+                assistant.offer(sample, rect: result.initializationRect ?? result.referenceRect)
                 selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
                 selectionMessage = result.message
                 selectionRect = overlayIsFresh(in: latest) ? result.rect.map { screenRect($0, frame: latest) } : nil

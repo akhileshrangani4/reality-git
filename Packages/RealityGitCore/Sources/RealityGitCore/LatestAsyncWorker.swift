@@ -62,9 +62,18 @@ public struct AssistantConnectionState: Sendable {
 public struct LocalTrackingEvidence: Sendable {
     public let displayRect: CGRect?
     public let referenceRect: CGRect?
+    public let initializationRect: CGRect?
     public let worldPosition: SIMD3<Float>?
     public var preservesTrack: Bool { displayRect != nil }
-    public init(confidentTrackedRect: CGRect?, maskRect: CGRect?, maskPosition: SIMD3<Float>?) {
+    public static func validSelectionRectangle(_ rect: CGRect) -> CGRect? {
+        guard [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height].allSatisfy(\.isFinite),
+              rect.minX >= 0, rect.minY >= 0, rect.width > 0, rect.height > 0,
+              rect.maxX <= 1, rect.maxY <= 1 else { return nil }
+        return rect
+    }
+    public init(confidentTrackedRect: CGRect?, maskRect: CGRect?, maskPosition: SIMD3<Float>?,
+                explicitSelectionRect: CGRect? = nil) {
+        initializationRect = explicitSelectionRect.flatMap(Self.validSelectionRectangle)
         displayRect = maskRect ?? confidentTrackedRect
         referenceRect = maskRect
         worldPosition = maskRect == nil ? nil : maskPosition

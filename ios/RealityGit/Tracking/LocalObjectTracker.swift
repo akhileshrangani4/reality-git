@@ -15,13 +15,14 @@ struct LocalTrackingResult: Sendable {
     let rect: CGRect?
     let worldPosition: SIMD3<Float>?
     let referenceRect: CGRect?
+    let initializationRect: CGRect?
     let worldBounds: SIMD3<Float>?
     let confidence: Float
     let message: String
     init(rect: CGRect?, worldPosition: SIMD3<Float>?, confidence: Float, message: String,
-         referenceRect: CGRect? = nil, worldBounds: SIMD3<Float>? = nil) {
+         referenceRect: CGRect? = nil, worldBounds: SIMD3<Float>? = nil, initializationRect: CGRect? = nil) {
         self.rect = rect; self.worldPosition = worldPosition
-        self.confidence = confidence; self.message = message; self.referenceRect = referenceRect; self.worldBounds = worldBounds
+        self.confidence = confidence; self.message = message; self.referenceRect = referenceRect; self.worldBounds = worldBounds; self.initializationRect = initializationRect
     }
 }
 
@@ -41,6 +42,21 @@ actor LocalObjectTracker {
             recoveryPolicy = MacRecoveryPolicy()
         }
         do {
+            var explicitSeed: CGRect?
+            var initialized: VNDetectedObjectObservation?
+            if case .rectangle(let box) = selection,
+               let box = LocalTrackingEvidence.validSelectionRectangle(box) {
+                explicitSeed = box
+                let request = VNTrackObjectRequest(detectedObjectObservation:
+                    VNDetectedObjectObservation(boundingBox: ImageCoordinates.visionRect(topLeftRect: box)))
+                request.trackingLevel = .accurate
+                try sequence.perform([request], on: sample.image, orientation: .up)
+                if let result = request.results?.first as? VNDetectedObjectObservation,
+                   !request.isLastFrame, result.confidence >= 0.6 {
+                    tracked = result; initialized = result
+                    recoveryPolicy.markTracked()
+                }
+            }
             var recovered: VNDetectedObjectObservation?
             if selection == nil, tracked == nil, let recovery {
                 let admittedRect = recoveryPolicy.admit(recovery.reply, sourceTime: recovery.source.timestamp,
@@ -71,11 +87,16 @@ actor LocalObjectTracker {
                     recoveryDiagnostic("Mac recovery withheld: \(recoveryPolicy.rejectionReason ?? "unknown") confidence=\(recovery.reply.confidence)")
                 }
             }
-            let result = try observe(sample, selection: selection, recovered: recovered)
+            let result = try observe(sample, selection: selection, recovered: recovered ?? initialized)
             if recovered != nil {
                 // Recovery can supply current mask-backed geometry, but cannot replace the reference.
                 return LocalTrackingResult(rect: result.rect, worldPosition: result.worldPosition,
                     confidence: result.confidence, message: result.message, referenceRect: nil, worldBounds: result.worldBounds)
+            }
+            if let explicitSeed {
+                return LocalTrackingResult(rect: result.rect, worldPosition: result.worldPosition,
+                    confidence: result.confidence, message: result.message, referenceRect: result.referenceRect,
+                    worldBounds: result.worldBounds, initializationRect: explicitSeed)
             }
             return result
         } catch {
@@ -172,7 +193,7 @@ actor LocalObjectTracker {
                 return maskUnavailable(predicted, confidence: trackingConfidence, reason: "mask/track mismatch")
             }
         }
-        if selection != nil {
+        if case .point = selection {
             // Initialize the sequence on the exact image that produced this mask.
             // Later requests must feed back Vision's result, preserving its UUID.
             let seed = VNDetectedObjectObservation(boundingBox: ImageCoordinates.visionRect(topLeftRect: rect))
