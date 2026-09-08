@@ -53,6 +53,13 @@ final class AssistantCoordinator: ObservableObject {
     // Evidence stays attached to exact source geometry; never updates local position/identity.
     private(set) var evidence: (DetectionReply, FrameSample)?
 
+    func recoveryEvidence() -> MacTrackingRecovery? {
+        guard connected, !connection.requiresReselection, connection.referenceInitialized,
+              let evidence, evidence.0.key.sessionID == sessionID,
+              evidence.0.key.objectID == objectID else { return nil }
+        return MacTrackingRecovery(reply: evidence.0, source: evidence.1, sessionID: sessionID, objectID: objectID)
+    }
+
     @discardableResult
     func connect(address: String) -> Bool {
         guard let endpoint = AssistantPolicy.localEndpoint(address) else {

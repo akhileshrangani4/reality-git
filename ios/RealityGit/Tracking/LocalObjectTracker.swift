@@ -28,36 +28,78 @@ actor LocalObjectTracker {
     private var sequence = VNSequenceRequestHandler()
     private var tracked: VNDetectedObjectObservation?
     private var generation: UUID?
+    private var recoveryPolicy = MacRecoveryPolicy()
+    private var currentSampleTime: Double = 0
 
-    func process(_ sample: FrameSample, selection: ObjectSelection?, generation: UUID) -> LocalTrackingResult {
+    func process(_ sample: FrameSample, selection: ObjectSelection?, generation: UUID, recovery: MacTrackingRecovery? = nil) -> LocalTrackingResult {
+        currentSampleTime = sample.timestamp
         if self.generation != generation || selection != nil {
             tracked = nil
             sequence = VNSequenceRequestHandler()
             self.generation = generation
+            recoveryPolicy = MacRecoveryPolicy()
         }
         do {
-            return try observe(sample, selection: selection)
+            var recovered: VNDetectedObjectObservation?
+            if selection == nil, tracked == nil, let recovery {
+                let admittedRect = recoveryPolicy.admit(recovery.reply, sourceTime: recovery.source.timestamp,
+                    currentTime: sample.timestamp, sessionID: recovery.sessionID, objectID: recovery.objectID)
+                if let rect = admittedRect {
+                    recoveryDiagnostic("Mac recovery attempt \(recoveryPolicy.attempts)")
+                    if let (newSequence, current) = try MacRecoveryExecutor.recover(source: recovery.source, current: sample,
+                        rect: rect, makeSequence: { VNSequenceRequestHandler() },
+                        seed: { (sequence: VNSequenceRequestHandler, source: FrameSample, rect: CGRect) -> VNDetectedObjectObservation? in
+                            let request = VNTrackObjectRequest(detectedObjectObservation:
+                                VNDetectedObjectObservation(boundingBox: ImageCoordinates.visionRect(topLeftRect: rect)))
+                            request.trackingLevel = .accurate
+                            try sequence.perform([request], on: source.image, orientation: .up)
+                            return request.isLastFrame ? nil : request.results?.first as? VNDetectedObjectObservation
+                        }, advance: { (sequence: VNSequenceRequestHandler, current: FrameSample, previous: VNDetectedObjectObservation) -> VNDetectedObjectObservation? in
+                            let request = VNTrackObjectRequest(detectedObjectObservation: previous)
+                            request.trackingLevel = .accurate
+                            try sequence.perform([request], on: current.image, orientation: .up)
+                            return request.isLastFrame ? nil : request.results?.first as? VNDetectedObjectObservation
+                        }, accepts: { $0.confidence >= 0.6 }) {
+                        sequence = newSequence
+                        tracked = current
+                        recovered = current
+                        recoveryPolicy.markTracked()
+                        recoveryDiagnostic("Mac recovery advanced to current source")
+                    } else { recoveryDiagnostic("Mac recovery forward pass uncertain") }
+                } else {
+                    recoveryDiagnostic("Mac recovery withheld: \(recoveryPolicy.rejectionReason ?? "unknown") confidence=\(recovery.reply.confidence)")
+                }
+            }
+            let result = try observe(sample, selection: selection, recovered: recovered)
+            if recovered != nil {
+                // Recovery can supply current mask-backed geometry, but cannot replace the reference.
+                return LocalTrackingResult(rect: result.rect, worldPosition: result.worldPosition,
+                    confidence: result.confidence, message: result.message, referenceRect: nil)
+            }
+            return result
         } catch {
             diagnostic("Vision tracking request failed")
             tracked = nil
+            recoveryPolicy.markLost(at: sample.timestamp)
             return LocalTrackingResult(rect: nil, worldPosition: nil, confidence: 0,
                 message: "Could not follow this object. Tap it again or draw a box.")
         }
     }
 
-    private func observe(_ sample: FrameSample, selection: ObjectSelection?) throws -> LocalTrackingResult {
-        var predicted: CGRect?
-        var trackingConfidence: Float = 1
-        if selection == nil {
+    private func observe(_ sample: FrameSample, selection: ObjectSelection?, recovered: VNDetectedObjectObservation?) throws -> LocalTrackingResult {
+        var predicted = recovered.map { ImageCoordinates.topLeftRect(visionRect: $0.boundingBox) }
+        var trackingConfidence: Float = recovered?.confidence ?? 1
+        if selection == nil && recovered == nil {
             guard let tracked else { return lost() }
             let request = VNTrackObjectRequest(detectedObjectObservation: tracked)
             request.trackingLevel = .accurate
             try sequence.perform([request], on: sample.image, orientation: .up)
-            guard let result = request.results?.first as? VNDetectedObjectObservation, result.confidence >= 0.6 else {
+            guard let result = request.results?.first as? VNDetectedObjectObservation, !request.isLastFrame, result.confidence >= 0.6 else {
                 self.tracked = nil
                 return lost(reason: "tracker confidence below 0.6 or no observation")
             }
             self.tracked = result
+            recoveryPolicy.markTracked()
             predicted = ImageCoordinates.topLeftRect(visionRect: result.boundingBox)
             trackingConfidence = result.confidence
         }
@@ -138,6 +180,7 @@ actor LocalObjectTracker {
             try sequence.perform([initialize], on: sample.image, orientation: .up)
             guard let result = initialize.results?.first as? VNDetectedObjectObservation else { return lost() }
             tracked = result
+            recoveryPolicy.markTracked()
         }
 
         var points: [SIMD3<Float>] = []
@@ -174,6 +217,14 @@ actor LocalObjectTracker {
             confidence: trackingConfidence, message: "Following the selected object. Move slowly around it to check stability.")
     }
 
+    private var lastRecoveryDiagnostic: String?
+    private func recoveryDiagnostic(_ reason: String) {
+        #if DEBUG
+        if reason != lastRecoveryDiagnostic {
+            print("Local recovery: \(reason)"); lastRecoveryDiagnostic = reason
+        }
+        #endif
+    }
     private var lastDiagnostic: String?
     private func diagnostic(_ reason: String) {
         #if DEBUG
@@ -197,6 +248,7 @@ actor LocalObjectTracker {
     private func lost(reason: String = "no continuous track; reselect required") -> LocalTrackingResult {
         diagnostic(reason)
         tracked = nil
+        recoveryPolicy.markLost(at: currentSampleTime)
         return LocalTrackingResult(rect: nil, worldPosition: nil, confidence: 0,
             message: "Tracking is uncertain. Tap the object again to select it.")
     }
