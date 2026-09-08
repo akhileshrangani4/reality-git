@@ -81,6 +81,15 @@ final class CapturedReferenceTests: XCTestCase {
         XCTAssertEqual(points.count, 256)
         XCTAssertTrue(points.allSatisfy { $0 % 40 <= 15 && $0 / 40 <= 15 })
     }
+    func testSlantedSupportPlaneAtClampedCornerIsNotAnObject() {
+        let depth = (0..<1600).map { i in Float(1) / (2 - 0.025 * Float(i % 40 + i / 40)) }
+        let confidence = Array(repeating: UInt8(2), count: 1600)
+        let rect = CGRect(x: 0, y: 0, width: 0.375, height: 0.375)
+        XCTAssertTrue(ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect).isEmpty)
+        var raised = depth
+        for y in 0...15 { for x in 0...15 { raised[y * 40 + x] = 0.35 } }
+        XCTAssertEqual(ForegroundDepth.indices(depth: raised, confidence: confidence, width: 40, height: 40, rect: rect).count, 256)
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

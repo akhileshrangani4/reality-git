@@ -17,13 +17,23 @@ public enum ForegroundDepth {
         guard right - left >= 5, bottom - top >= 5 else { return [] }
         func valid(_ i: Int) -> Bool { confidence[i] >= 2 && depth[i].isFinite && depth[i] > 0.15 && depth[i] < 4 }
         var ring: [Float] = [], center: [Int] = []
+        var normal = simd_float3x3(0)
+        var target = SIMD3<Float>.zero
+        func coordinate(_ x: Int, _ y: Int) -> SIMD3<Float> {
+            SIMD3(Float(x - left) / Float(right - left), Float(y - top) / Float(bottom - top), 1)
+        }
         let marginX = max(2, Int(Double(right - left + 1) * 0.2))
         let marginY = max(2, Int(Double(bottom - top + 1) * 0.2))
         for y in max(0, top - marginY)...min(height - 1, bottom + marginY) {
             for x in max(0, left - marginX)...min(width - 1, right + marginX) {
                 guard x < left || x > right || y < top || y > bottom else { continue }
                 let i = y * width + x
-                if valid(i) { ring.append(depth[i]) }
+                if valid(i) {
+                    ring.append(depth[i])
+                    let q = coordinate(x, y)
+                    normal += simd_float3x3(columns: (q * q.x, q * q.y, q * q.z))
+                    target += q / depth[i]
+                }
             }
         }
         for y in top...bottom {
@@ -40,6 +50,14 @@ public enum ForegroundDepth {
         // At least 75% of the external ring must be behind the seed, preventing a
         // component cut out of the support plane from becoming a reference.
         guard ring[ring.count / 4] - foreground > 0.07 else { return [] }
+        // Perspective depth of a plane has affine inverse depth. A one-sided
+        // corner ring can be farther solely because the support plane slopes;
+        // require separation from its extrapolated depth at the actual seed too.
+        guard abs(simd_determinant(normal)) > 0.00001 else { return [] }
+        let plane = normal.inverse * target
+        let inverseDepth = simd_dot(plane, coordinate(seed % width, seed / width))
+        guard inverseDepth.isFinite, inverseDepth > 0,
+              1 / inverseDepth - foreground > 0.07 else { return [] }
         var queue = [seed], seen: Set<Int> = [seed], cursor = 0
         while cursor < queue.count {
             let i = queue[cursor]; cursor += 1
