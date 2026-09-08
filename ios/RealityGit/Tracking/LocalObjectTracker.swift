@@ -345,7 +345,7 @@ actor LocalObjectTracker {
         guard evidence.preservesTrack else { return lost(reason: reason) }
         // Keep the actual VN observation from this frame. Missing segmentation cannot erase a confident temporal track.
         return supportedResult(predicted: predicted, maskRect: nil, position: nil, confidence: confidence,
-            message: "Following the object. For capture, draw a box with a little background around it.")
+            message: "Following the object. Hold still for depth capture.")
     }
     private func fallbackDepthIsVisible(_ center: SIMD3<Float>, sample: FrameSample) -> Bool {
         guard let lastSupportedWorld else { return true }

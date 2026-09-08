@@ -63,6 +63,24 @@ final class CapturedReferenceTests: XCTestCase {
         for i in 4...6 { reducer.observe(position: .zero, identityConfirmed: true, visibility: .visibleOccupied, time: Double(i) * 0.3, frameID: UInt64(i)) }
         XCTAssertEqual(reducer.state, .unchanged)
     }
+    func testTightlyBoxedForegroundUsesOnlyExternalBackgroundRing() {
+        var depth = Array(repeating: Float(1), count: 1600)
+        let confidence = Array(repeating: UInt8(2), count: 1600)
+        for y in 12...27 { for x in 12...27 { depth[y * 40 + x] = 0.8 } }
+        let rect = CGRect(x: 0.3, y: 0.3, width: 0.375, height: 0.375)
+        let points = ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect)
+        XCTAssertEqual(points.count, 256)
+        XCTAssertTrue(points.allSatisfy { depth[$0] == 0.8 })
+        let flat = Array(repeating: Float(0.8), count: 1600)
+        XCTAssertTrue(ForegroundDepth.indices(depth: flat, confidence: confidence, width: 40, height: 40, rect: rect).isEmpty)
+    }
+    func testExternalRingClampsAtImageEdgeAndKeepsComponentInsideSelection() {
+        var depth = Array(repeating: Float(1), count: 1600)
+        for y in 0...15 { for x in 0...15 { depth[y * 40 + x] = 0.8 } }
+        let points = ForegroundDepth.indices(depth: depth, confidence: Array(repeating: 2, count: 1600), width: 40, height: 40, rect: CGRect(x: 0, y: 0, width: 0.375, height: 0.375))
+        XCTAssertEqual(points.count, 256)
+        XCTAssertTrue(points.allSatisfy { $0 % 40 <= 15 && $0 / 40 <= 15 })
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)
