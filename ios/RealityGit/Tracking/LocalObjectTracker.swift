@@ -14,8 +14,14 @@ enum ObjectSelection: Sendable {
 struct LocalTrackingResult: Sendable {
     let rect: CGRect?
     let worldPosition: SIMD3<Float>?
+    let referenceRect: CGRect?
     let confidence: Float
     let message: String
+    init(rect: CGRect?, worldPosition: SIMD3<Float>?, confidence: Float, message: String,
+         referenceRect: CGRect? = nil) {
+        self.rect = rect; self.worldPosition = worldPosition
+        self.confidence = confidence; self.message = message; self.referenceRect = referenceRect
+    }
 }
 
 actor LocalObjectTracker {
@@ -32,6 +38,7 @@ actor LocalObjectTracker {
         do {
             return try observe(sample, selection: selection)
         } catch {
+            diagnostic("Vision tracking request failed")
             tracked = nil
             return LocalTrackingResult(rect: nil, worldPosition: nil, confidence: 0,
                 message: "Could not follow this object. Tap it again or draw a box.")
@@ -48,7 +55,7 @@ actor LocalObjectTracker {
             try sequence.perform([request], on: sample.image, orientation: .up)
             guard let result = request.results?.first as? VNDetectedObjectObservation, result.confidence >= 0.6 else {
                 self.tracked = nil
-                return lost()
+                return lost(reason: "tracker confidence below 0.6 or no observation")
             }
             self.tracked = result
             predicted = ImageCoordinates.topLeftRect(visionRect: result.boundingBox)
@@ -57,19 +64,18 @@ actor LocalObjectTracker {
 
         let handler = VNImageRequestHandler(cvPixelBuffer: sample.image, orientation: .up)
         let request = VNGenerateForegroundInstanceMaskRequest()
-        try handler.perform([request])
+        do { try handler.perform([request]) }
+        catch { return maskUnavailable(predicted, confidence: trackingConfidence, reason: "foreground request failed") }
         guard let observation = request.results?.first else {
-            tracked = nil
-            return lost()
+            return maskUnavailable(predicted, confidence: trackingConfidence, reason: "no mask")
         }
         let mask = observation.instanceMask
         guard CVPixelBufferGetPixelFormatType(mask) == kCVPixelFormatType_OneComponent8 else {
-            tracked = nil
-            return lost()
+            return maskUnavailable(predicted, confidence: trackingConfidence, reason: "unsupported mask format")
         }
         CVPixelBufferLockBaseAddress(mask, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(mask) else { return lost() }
+        guard let base = CVPixelBufferGetBaseAddress(mask) else { return maskUnavailable(predicted, confidence: trackingConfidence, reason: "no mask pixels") }
         let width = CVPixelBufferGetWidth(mask), height = CVPixelBufferGetHeight(mask)
         let stride = CVPixelBufferGetBytesPerRow(mask)
         func labelAt(_ x: Int, _ y: Int) -> UInt8 {
@@ -95,8 +101,7 @@ actor LocalObjectTracker {
             let candidates = counts.sorted { $0.value > $1.value }
             guard let best = candidates.first, best.value >= 16,
                   candidates.count == 1 || Double(best.value) > Double(candidates[1].value) * 1.5 else {
-                tracked = nil
-                return lost()
+                return maskUnavailable(predicted, confidence: trackingConfidence, reason: "ambiguous or empty mask")
             }
             label = best.key
         }
@@ -113,7 +118,7 @@ actor LocalObjectTracker {
                 maxX = max(maxX, x); maxY = max(maxY, y)
             }
         }
-        guard minX < maxX, minY < maxY else { return lost() }
+        guard minX < maxX, minY < maxY else { return maskUnavailable(predicted, confidence: trackingConfidence, reason: "empty mask extent") }
         let rect = CGRect(x: Double(minX) / Double(width), y: Double(minY) / Double(height),
             width: Double(maxX - minX + 1) / Double(width), height: Double(maxY - minY + 1) / Double(height))
         if let predicted {
@@ -121,8 +126,7 @@ actor LocalObjectTracker {
             let unionArea = predicted.width * predicted.height + rect.width * rect.height - overlap.width * overlap.height
             guard !overlap.isNull, unionArea > 0,
                   overlap.width * overlap.height / unionArea >= 0.3 else {
-                tracked = nil
-                return lost()
+                return maskUnavailable(predicted, confidence: trackingConfidence, reason: "mask/track mismatch")
             }
         }
         if selection != nil {
@@ -160,15 +164,38 @@ actor LocalObjectTracker {
             }
         }
         guard points.count >= 12, let center = Projection.medianPosition(points) else {
-            return LocalTrackingResult(rect: rect, worldPosition: nil, confidence: trackingConfidence,
+            diagnostic("insufficient depth")
+            return supportedResult(predicted: predicted, maskRect: rect, position: nil, confidence: trackingConfidence,
                 message: "Object selected. Move closer for a reliable depth measurement.")
         }
         let world = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
-        return LocalTrackingResult(rect: rect, worldPosition: SIMD3(world.x, world.y, world.z),
+        diagnostic("mask and depth available")
+        return supportedResult(predicted: predicted, maskRect: rect, position: SIMD3(world.x, world.y, world.z),
             confidence: trackingConfidence, message: "Following the selected object. Move slowly around it to check stability.")
     }
 
-    private func lost() -> LocalTrackingResult {
+    private var lastDiagnostic: String?
+    private func diagnostic(_ reason: String) {
+        #if DEBUG
+        if reason != lastDiagnostic { print("Local tracking: \(reason)"); lastDiagnostic = reason }
+        #endif
+    }
+    private func supportedResult(predicted: CGRect?, maskRect: CGRect?, position: SIMD3<Float>?,
+                                 confidence: Float, message: String) -> LocalTrackingResult {
+        let evidence = LocalTrackingEvidence(confidentTrackedRect: predicted, maskRect: maskRect, maskPosition: position)
+        return LocalTrackingResult(rect: evidence.displayRect, worldPosition: evidence.worldPosition,
+            confidence: confidence, message: message, referenceRect: evidence.referenceRect)
+    }
+    private func maskUnavailable(_ predicted: CGRect?, confidence: Float, reason: String) -> LocalTrackingResult {
+        diagnostic(reason)
+        let evidence = LocalTrackingEvidence(confidentTrackedRect: predicted, maskRect: nil, maskPosition: nil)
+        guard evidence.preservesTrack else { return lost(reason: reason) }
+        // Keep the actual VN observation from this frame. Missing segmentation cannot erase a confident temporal track.
+        return supportedResult(predicted: predicted, maskRect: nil, position: nil, confidence: confidence,
+            message: "Following the object. Move closer for depth.")
+    }
+    private func lost(reason: String = "no continuous track; reselect required") -> LocalTrackingResult {
+        diagnostic(reason)
         tracked = nil
         return LocalTrackingResult(rect: nil, worldPosition: nil, confidence: 0,
             message: "Tracking is uncertain. Tap the object again to select it.")

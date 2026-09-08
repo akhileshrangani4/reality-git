@@ -26,6 +26,8 @@ final class ARSessionController: NSObject, ObservableObject {
     private var pendingSelection: (FrameSample, ObjectSelection)?
     private var lastSampleTime: TimeInterval = 0
     private var imageRect: CGRect?
+    private var lastInferenceDiagnosticTime: TimeInterval = -.infinity
+    private var lastInferenceMessage = ""
     private var lastResultTime: TimeInterval = 0
     private var resultCameraPose: simd_float4x4?
     private var marker: AnchorEntity?
@@ -160,7 +162,12 @@ final class ARSessionController: NSObject, ObservableObject {
                 next = .limited("Move slowly around the same area to recover tracking.")
             }
         }
-        if status != next { status = next }
+        if status != next {
+            #if DEBUG
+            print("AR status changed: \(status) -> \(next)")
+            #endif
+            status = next
+        }
         if next.isReady, hasSelection {
             if !overlayIsFresh(in: frame) {
                 selectionRect = nil
@@ -280,19 +287,26 @@ final class ARSessionController: NSObject, ObservableObject {
             let result = await tracker.process(sample, selection: selection, generation: generation)
             workerBusy = false
             #if DEBUG
-            print("Local Vision completed age=\((arView.session.currentFrame?.timestamp ?? sample.timestamp) - sample.timestamp)s currentGeneration=\(generation == trackingGeneration) confidence=\(result.confidence) result=\(result.message)")
+            let shouldLogInference = result.message != lastInferenceMessage || sample.timestamp - lastInferenceDiagnosticTime >= 1
+            if shouldLogInference {
+                lastInferenceDiagnosticTime = sample.timestamp
+                lastInferenceMessage = result.message
+                print("Local Vision completed age=\((arView.session.currentFrame?.timestamp ?? sample.timestamp) - sample.timestamp)s currentGeneration=\(generation == trackingGeneration) confidence=\(result.confidence) result=\(result.message)")
+            }
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect
-                assistant.offer(sample, rect: result.rect)
+                assistant.offer(sample, rect: result.referenceRect)
                 selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
                 selectionMessage = result.message
                 selectionRect = overlayIsFresh(in: latest) ? result.rect.map { screenRect($0, frame: latest) } : nil
                 #if DEBUG
-                print("Local Vision age=\(latest.timestamp - sample.timestamp)s overlay=\(selectionRect != nil) confidence=\(result.confidence) result=\(result.message)")
+                if shouldLogInference {
+                    print("Local geometry overlay=\(selectionRect != nil) metric=\(selectedPosition != nil) mask=\(result.referenceRect != nil)")
+                }
                 #endif
             }
             if wantsRunning, let pendingSelection {

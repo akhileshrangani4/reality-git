@@ -15,12 +15,27 @@ final class AssistantCoordinator: ObservableObject {
     private var sessionID = UUID()
     private var objectID = UUID()
     private var frameID: UInt64 = 0
-    private var queue = LatestObservationQueue()
+    private var connection = AssistantConnectionState()
     private var frames = FrameBuffer()
-    private var task: Task<Void, Never>?
+    private struct Job: Sendable {
+        let key: ObservationKey
+        let source: AssistantSample
+        let client: AssistantClient
+        let reference: Bool
+        let edge: Int
+    }
+    private lazy var worker = LatestAsyncWorker<Job, DetectionReply>(operation: { job in
+        let jpeg = try await Task.detached(priority: .utility) {
+            try Self.encode(job.source.frame, longEdge: job.edge)
+        }.value
+        try Task.checkCancellation()
+        guard CACurrentMediaTime() - job.key.captureTime <= 5 else { throw CancellationError() }
+        return try await job.client.submit(FrameRequest(key: job.key, jpeg: jpeg,
+            seedRect: job.reference ? job.source.seed : nil, isReference: job.reference))
+    }, completion: { [weak self] job, result in self?.complete(job, result: result) })
     private var lastSampleTime: Double = -.infinity
     private var lastAcceptedTime: Double = -.infinity
-    private var referenceInitialized = false
+
     // Evidence stays attached to exact source geometry; never updates local position/identity.
     private(set) var evidence: (DetectionReply, FrameSample)?
 
@@ -31,9 +46,10 @@ final class AssistantCoordinator: ObservableObject {
             return false
         }
         cancelPending()
+        connection.connect(to: endpoint)
         client = AssistantClient(endpoint: endpoint)
         connected = true
-        message = "Mac enabled · waiting for a selected frame"
+        message = connection.requiresReselection ? "Mac changed · select your object again" : "Mac enabled · waiting for a selected frame"
         return true
     }
     func disconnect() {
@@ -45,69 +61,59 @@ final class AssistantCoordinator: ObservableObject {
     func resetSelection() {
         cancelPending()
         objectID = UUID()
-        referenceInitialized = false
+        connection.selectNewObject()
         lastSampleTime = -.infinity
         lastAcceptedTime = -.infinity
         if connected { message = "Mac connected · select an object" }
     }
     private func cancelPending() {
-        task?.cancel(); task = nil
-        queue.reset(); frames.reset(); evidence = nil
+        worker.invalidate()
+        frames.reset(); evidence = nil
     }
     func tick(now: Double) {
         frames.prune(now: now)
         if let evidence, now - evidence.0.key.captureTime > 5 { self.evidence = nil }
     }
     func wantsSample(at time: Double) -> Bool {
-        connected && referenceInitialized && time - lastSampleTime >= 1 / max(0.1, samplesPerSecond)
+        connected && !connection.requiresReselection && connection.referenceInitialized && time - lastSampleTime >= 1 / max(0.1, samplesPerSecond)
     }
     func offer(_ sample: FrameSample, rect: CGRect?) {
-        guard connected, referenceInitialized || rect != nil,
+        guard connected, !connection.requiresReselection, connection.referenceInitialized || rect != nil,
               sample.timestamp - lastSampleTime >= 1 / max(0.1, samplesPerSecond) else { return }
         lastSampleTime = sample.timestamp
         frameID &+= 1
         let key = ObservationKey(sessionID: sessionID, objectID: objectID, frameID: frameID, captureTime: sample.timestamp)
         frames.insert(AssistantSample(frame: sample, seed: rect.map { [$0.minX, $0.minY, $0.width, $0.height] }), for: key, now: CACurrentMediaTime())
-        if let next = queue.offer(key) { launch(next) }
+        guard let client, let source = frames.value(for: key, now: CACurrentMediaTime()) else { return }
+        worker.submit(Job(key: key, source: source, client: client,
+            reference: !connection.referenceInitialized, edge: max(64, min(1920, longEdge))))
     }
-    private func launch(_ key: ObservationKey) {
-        guard let client, let source = frames.value(for: key, now: CACurrentMediaTime()) else {
-            if let next = queue.finish(key) { launch(next) }
-            return
-        }
-        let reference = !referenceInitialized
-        let edge = max(64, min(1920, longEdge))
-        task = Task {
-            do {
-                let jpeg = try await Task.detached(priority: .utility) {
-                    try Self.encode(source.frame, longEdge: edge)
-                }.value
-                try Task.checkCancellation()
-                guard CACurrentMediaTime() - key.captureTime <= 5 else { throw CancellationError() }
-                let reply = try await client.submit(FrameRequest(key: key, jpeg: jpeg,
-                    seedRect: reference ? source.seed : nil, isReference: reference))
-                try Task.checkCancellation()
-                guard queue.inFlight == key else { return }
-                let currentSource = frames.value(for: key, now: CACurrentMediaTime())
-                if AssistantPolicy.validReply(reply, sent: key, now: CACurrentMediaTime(),
-                    lastAcceptedTime: lastAcceptedTime, sourceExists: currentSource != nil), let currentSource {
-                    lastAcceptedTime = key.captureTime
-                    if reference && (reply.status == .identityConfirmed || reply.status == .tracked) { referenceInitialized = true }
-                    evidence = (reply, currentSource.frame)
-                    switch reply.status {
-                    case .tracked: message = "Mac tracked · source frame \(key.frameID)"
-                    case .candidate: message = "Mac candidate · identity unconfirmed"
-                    case .identityConfirmed: message = "Mac reference initialized"
-                    case .notFound: message = "Mac uncertain · local tracking continues"
-                    }
-                } else { message = "Mac reply discarded · stale or mismatched frame" }
-            } catch {
-                guard queue.inFlight == key else { return }
-                message = "Mac unavailable · local tracking continues"
+    private func complete(_ job: Job, result: Result<DetectionReply, any Error>) {
+        switch result {
+        case .success(let reply):
+            let now = CACurrentMediaTime()
+            let source = frames.value(for: job.key, now: now)
+            guard AssistantPolicy.validReply(reply, sent: job.key, now: now,
+                lastAcceptedTime: lastAcceptedTime, sourceExists: source != nil), let source else {
+                message = "Mac reply discarded · stale or mismatched frame"
+                return
             }
-            guard queue.inFlight == key else { return }
-            task = nil
-            if let next = queue.finish(key) { launch(next) }
+            lastAcceptedTime = job.key.captureTime
+            if job.reference && (reply.status == .identityConfirmed || reply.status == .tracked) {
+                connection.acknowledgeReference()
+            }
+            evidence = (reply, source.frame)
+            switch reply.status {
+            case .tracked: message = "Mac tracking active"
+            case .candidate: message = "Mac candidate · identity unconfirmed"
+            case .identityConfirmed: message = "Mac reference initialized"
+            case .notFound: message = "Mac uncertain · local tracking continues"
+            }
+            #if DEBUG
+            print("Mac reply frame=\(job.key.frameID) status=\(reply.status)")
+            #endif
+        case .failure:
+            message = "Mac unavailable · local tracking continues"
         }
     }
     nonisolated private static func encode(_ sample: FrameSample, longEdge: Int) throws -> Data {

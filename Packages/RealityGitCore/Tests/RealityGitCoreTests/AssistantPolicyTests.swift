@@ -6,18 +6,6 @@ final class AssistantPolicyTests: XCTestCase {
     func key(_ frame: UInt64, time: Double = 1) -> ObservationKey {
         ObservationKey(sessionID: session, objectID: object, frameID: frame, captureTime: time)
     }
-    func testNewestPendingWinsAndLateCompletionCannotFreeNewSlot() {
-        var queue = LatestObservationQueue()
-        XCTAssertEqual(queue.offer(key(1)), key(1))
-        XCTAssertNil(queue.offer(key(2)))
-        XCTAssertNil(queue.offer(key(3)))
-        XCTAssertEqual(queue.finish(key(1)), key(3))
-        queue.reset()
-        XCTAssertEqual(queue.offer(key(4)), key(4))
-        XCTAssertNil(queue.finish(key(3)))
-        XCTAssertEqual(queue.inFlight, key(4))
-        XCTAssertNil(queue.pending)
-    }
     func testBufferCapacityAndExpiry() {
         var buffer = SourceFrameBuffer<Int>()
         for i in 1...13 { buffer.insert(i, for: key(UInt64(i)), now: 1) }

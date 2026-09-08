@@ -1,24 +1,5 @@
 import Foundation
 
-/// Serial owner calls offer/finish. A completion from a reset generation cannot release a newer slot.
-public struct LatestObservationQueue: Sendable {
-    public private(set) var inFlight: ObservationKey?
-    public private(set) var pending: ObservationKey?
-    public init() {}
-    public mutating func offer(_ key: ObservationKey) -> ObservationKey? {
-        if inFlight == nil { inFlight = key; return key }
-        pending = key
-        return nil
-    }
-    public mutating func finish(_ key: ObservationKey) -> ObservationKey? {
-        guard inFlight == key else { return nil }
-        inFlight = pending
-        pending = nil
-        return inFlight
-    }
-    public mutating func reset() { inFlight = nil; pending = nil }
-}
-
 public struct SourceFrameBuffer<Value> {
     private var entries: [(ObservationKey, Value)] = []
     public let capacity: Int
