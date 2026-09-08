@@ -90,6 +90,30 @@ final class CapturedReferenceTests: XCTestCase {
         for y in 0...15 { for x in 0...15 { raised[y * 40 + x] = 0.35 } }
         XCTAssertEqual(ForegroundDepth.indices(depth: raised, confidence: confidence, width: 40, height: 40, rect: rect).count, 256)
     }
+    func testFreshSeparatedComponentCanRelocateInDepthButRejectsOccluderAppearance() throws {
+        let points = (0..<64).map { i in SIMD3(Float(i % 8) * 0.01, Float(i / 8) * 0.01, Float(-1)) }
+        let support: [SIMD2<Float>] = (0..<64).map { i in
+            let x = (Float(i % 8) + 0.5) / 8
+            let y = (Float(i / 8) + 0.5) / 8
+            return SIMD2<Float>(x, y)
+        }
+        let colors = Array(repeating: SIMD3<Float>(0.1, 0.3, 0.8), count: 64)
+        let initial = try XCTUnwrap(DepthComponentSignature(points: points, colors: colors, support: support))
+        for delta: Float in [-0.3, 0.3] {
+            let moved = points.map { $0 + SIMD3(0, 0, delta) }
+            let candidate = try XCTUnwrap(DepthComponentSignature(points: moved, colors: colors, support: support))
+            XCTAssertTrue(initial.accepts(candidate, confidence: 0.9))
+            XCTAssertFalse(ForegroundDepth.allowsFallback(measuredDepth: 1 - delta, supportedWorld: SIMD3(0,0,-1), cameraToWorld: matrix_identity_float4x4), "Old support cannot establish the relocated depth")
+            var diff = DiffReducer(referencePosition: SIMD3(0,0,-1))
+            for frame in 0...2 { diff.observe(position: SIMD3(0,0,-1 + delta), identityConfirmed: initial.accepts(candidate, confidence: 0.9), visibility: .visibleOccupied, time: Double(frame) * 0.3, frameID: UInt64(frame)) }
+            XCTAssertEqual(diff.state, .moved)
+        }
+        let handColors = Array(repeating: SIMD3<Float>(0.8, 0.5, 0.4), count: 64)
+        let hand = try XCTUnwrap(DepthComponentSignature(points: points.map { $0 + SIMD3(0,0,0.3) }, colors: handColors, support: support))
+        XCTAssertFalse(initial.accepts(hand, confidence: 0.95))
+        let larger = try XCTUnwrap(DepthComponentSignature(points: points.map { SIMD3($0.x * 2, $0.y, $0.z) }, colors: colors, support: support))
+        XCTAssertFalse(initial.accepts(larger, confidence: 0.95))
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

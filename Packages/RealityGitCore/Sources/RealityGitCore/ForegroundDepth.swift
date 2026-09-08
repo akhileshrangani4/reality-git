@@ -73,3 +73,28 @@ public enum ForegroundDepth {
         return Array(queue.prefix(8000))
     }
 }
+
+/// Association checks for a freshly separated component. Unlike propagated
+/// support, this evidence can move in depth, but must retain object appearance.
+public struct DepthComponentSignature: Sendable {
+    private let size: SIMD2<Float>
+    private let color: SIMD3<Float>
+    private let cells: Set<Int>
+    public init?(points: [SIMD3<Float>], colors: [SIMD3<Float>], support: [SIMD2<Float>]) {
+        guard points.count >= 12, colors.count == points.count, support.count == points.count else { return nil }
+        var low = points[0], high = low
+        for p in points { low = simd_min(low, p); high = simd_max(high, p) }
+        size = SIMD2(high.x - low.x, high.y - low.y)
+        color = colors.reduce(.zero, +) / Float(colors.count)
+        cells = Set(support.filter { $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.x <= 1 && $0.y >= 0 && $0.y <= 1 }.map { min(7, Int($0.y * 8)) * 8 + min(7, Int($0.x * 8)) })
+        guard size.x > 0.005, size.y > 0.005, [size.x, size.y, color.x, color.y, color.z].allSatisfy(\.isFinite), !cells.isEmpty else { return nil }
+    }
+    public func accepts(_ candidate: DepthComponentSignature, confidence: Float) -> Bool {
+        guard confidence >= 0.8, confidence.isFinite,
+              candidate.size.x / size.x >= 0.7, candidate.size.x / size.x <= 1.3,
+              candidate.size.y / size.y >= 0.7, candidate.size.y / size.y <= 1.3,
+              simd_distance(color, candidate.color) <= 0.25 else { return false }
+        let intersection = cells.intersection(candidate.cells).count
+        return intersection * 10 >= cells.count * 7 && intersection * 10 >= candidate.cells.count * 7
+    }
+}

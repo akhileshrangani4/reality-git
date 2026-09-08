@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import simd
 import RealityGitCore
 
 /// Metric keys are local samples, independent of upload scheduling. Mac recovery becomes
@@ -26,7 +27,15 @@ final class SessionCoordinator: ObservableObject {
         frameID &+= 1
         return ObservationKey(sessionID: sessionID, objectID: objectID, frameID: frameID, captureTime: sample.timestamp)
     }
+    private var lastMetricDiagnosticTime: Double = -.infinity
     func ingest(_ result: LocalTrackingResult, key: ObservationKey, now: Double, visibility: VisibilityEvidence = .unknown) {
+        #if DEBUG
+        if now - lastMetricDiagnosticTime >= 1 {
+            lastMetricDiagnosticTime = now
+            let distance = result.worldPosition.flatMap { point in reference.map { simd_distance(point, $0.position) } }
+            print("Object diff: state=\(state) metric=\(result.worldPosition != nil) referenceDistance=\(distance.map(String.init(describing:)) ?? "unknown") age=\(now-key.captureTime) confidence=\(result.confidence)")
+        }
+        #endif
         guard key.sessionID == sessionID, key.objectID == objectID,
               now >= key.captureTime, now - key.captureTime <= 0.5 else { return }
         guard let position = result.worldPosition, let bounds = result.worldBounds,

@@ -34,6 +34,7 @@ actor LocalObjectTracker {
     private var generation: UUID?
     private var recoveryPolicy = MacRecoveryPolicy()
     private var support: [(Float, Float)] = []
+    private var componentSignature: DepthComponentSignature?
     private var lastSupportedWorld: SIMD3<Float>?
     private var explicitDepthSelection = false
     private var lastMaskAttempt: Double = -.infinity
@@ -50,6 +51,7 @@ actor LocalObjectTracker {
             tracked = nil
             support = []
             lastSupportedWorld = nil
+            componentSignature = nil
             if case .rectangle = selection { explicitDepthSelection = true } else { explicitDepthSelection = false }
             sequence = VNSequenceRequestHandler()
             self.generation = generation
@@ -257,6 +259,7 @@ actor LocalObjectTracker {
         support = pixels.map { (Float((Double($0.0) + 0.5) / Double(sample.depthWidth) - rect.minX) / Float(rect.width), Float((Double($0.1) + 0.5) / Double(sample.depthHeight) - rect.minY) / Float(rect.height)) }
         supportTime = sample.timestamp
         let colors = sample.colors(at: pixels)
+        componentSignature = DepthComponentSignature(points: points, colors: colors, support: support.map { SIMD2($0.0, $0.1) })
         let world = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
         lastSupportedWorld = SIMD3(world.x, world.y, world.z)
         let worldPoints = points.map { point in
@@ -287,6 +290,14 @@ actor LocalObjectTracker {
         if reason != lastDiagnostic { print("Local tracking: \(reason)"); lastDiagnostic = reason }
         #endif
     }
+    private var lastGeometryTime: Double = -.infinity
+    private func geometryDiagnostic(_ reason: String) {
+        #if DEBUG
+        guard currentSampleTime - lastGeometryTime >= 1 else { return }
+        lastGeometryTime = currentSampleTime
+        print("Local geometry: \(reason)")
+        #endif
+    }
     private func supportedResult(predicted: CGRect?, maskRect: CGRect?, position: SIMD3<Float>?,
                                  confidence: Float, message: String, bounds: SIMD3<Float>? = nil, capturedPoints: [CapturedPoint] = []) -> LocalTrackingResult {
         let evidence = LocalTrackingEvidence(confidentTrackedRect: predicted, maskRect: maskRect, maskPosition: position)
@@ -307,20 +318,27 @@ actor LocalObjectTracker {
                 guard let pixel = Projection.imagePixel(depthX: x, depthY: y, depthWidth: sample.depthWidth, depthHeight: sample.depthHeight, imageWidth: CVPixelBufferGetWidth(sample.image), imageHeight: CVPixelBufferGetHeight(sample.image)), let p = Projection.unproject(u: pixel.x, v: pixel.y, depth: sample.depth[i], fx: sample.intrinsics[0][0], fy: sample.intrinsics[1][1], cx: sample.intrinsics[2][0], cy: sample.intrinsics[2][1]) else { continue }
                 cameraPoints.append(p); pixels.append((x,y))
             }
-            if let center = Projection.medianPosition(cameraPoints), cameraPoints.count >= 12, fallbackDepthIsVisible(center, sample: sample) {
+            let colors = sample.colors(at: pixels)
+            let currentSupport = pixels.map { SIMD2(Float((Double($0.0)+0.5)/Double(sample.depthWidth)-rect.minX)/Float(rect.width), Float((Double($0.1)+0.5)/Double(sample.depthHeight)-rect.minY)/Float(rect.height)) }
+            let signature = DepthComponentSignature(points: cameraPoints, colors: colors, support: currentSupport)
+            let associated = signature.map { candidate in componentSignature.map { $0.accepts(candidate, confidence: confidence) } ?? (lastSupportedWorld == nil) } ?? false
+            if let center = Projection.medianPosition(cameraPoints), cameraPoints.count >= 12, associated {
                 let w = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
                 let position = SIMD3(w.x,w.y,w.z)
-                if lastSupportedWorld == nil { lastSupportedWorld = position }
+                lastSupportedWorld = position
+                if componentSignature == nil { componentSignature = signature }
+                geometryDiagnostic("fresh separated component accepted points=\(cameraPoints.count) confidence=\(confidence)")
                 let worldPoints = cameraPoints.map { p in
                     let w = sample.cameraToWorld * SIMD4(p.x,p.y,p.z,1)
                     return SIMD3(w.x,w.y,w.z)
                 }
-                let colors = sample.colors(at: pixels)
-                support = pixels.map { (Float((Double($0.0)+0.5)/Double(sample.depthWidth)-rect.minX)/Float(rect.width), Float((Double($0.1)+0.5)/Double(sample.depthHeight)-rect.minY)/Float(rect.height)) }
+                support = currentSupport.map { ($0.x, $0.y) }
                 supportTime = sample.timestamp
                 var low = worldPoints[0], high = low
                 for p in worldPoints { low = simd_min(low,p); high = simd_max(high,p) }
                 return LocalTrackingResult(rect: predicted ?? rect, worldPosition: position, confidence: confidence, message: "Remembered depth shape", referenceRect: rect, worldBounds: simd_max(high-low,SIMD3(repeating:0.03)), capturedPoints: zip(worldPoints,colors).map { CapturedPoint(position:$0.0-position,color:$0.1) })
+            } else {
+                geometryDiagnostic(cameraPoints.count < 12 ? "separated component missing/rejected background" : "component association rejected size/color/support confidence=\(confidence)")
             }
         }
         if let predicted, confidence >= 0.8, let sample = activeSample, sample.timestamp - supportTime <= 1.5, support.count >= 12 {
@@ -336,9 +354,10 @@ actor LocalObjectTracker {
             if points.count >= max(12, support.count / 2), let center = Projection.medianPosition(points) {
                 let coherent = points.filter { abs($0.z - center.z) < 0.08 }
                 if coherent.count * 10 >= points.count * 8, fallbackDepthIsVisible(center, sample: sample) {
+                    geometryDiagnostic("propagated support accepted")
                     let world = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
                     return LocalTrackingResult(rect: predicted, worldPosition: SIMD3(world.x, world.y, world.z), confidence: confidence, message: "Following remembered object", worldBounds: SIMD3(repeating: 0.1))
-                }
+                } else { geometryDiagnostic("propagated support rejected coherence/depth occlusion guard") }
             }
         }
         let evidence = LocalTrackingEvidence(confidentTrackedRect: predicted, maskRect: nil, maskPosition: nil)
