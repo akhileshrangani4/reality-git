@@ -24,6 +24,8 @@
 
 ## Starting point and choices
 
+Current prototype checkpoint: phone code `9ecf7f4` and Mac server `baaec84` are installed/running. The phone has native captured Gaussian appearance from a first-view LiDAR surface, retained original reference, movement/absence/restoration logic, and local/Mac recovery; live Astra labels and comparisons are verified in logs. The user confirms the captured preview and red old-position shape. Green current-position rendering failed in the previous physical build; the new geometry-association fixes are built, reviewed, installed, and awaiting the next movement test. Guided multi-view capture, trainer/export work, the EdgeTAM comparison, and complete physical validation remain unfinished. See [device results](../../testing/device-validation.md).
+
 Implementation has started; see task status below. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the connected iPhone 15 Pro runs iOS 27 build 24A5430a; signed builds install and launch successfully. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
 
 Keep one integrated plan because the Mac and phone jointly implement a single interaction. Every task below has its own testable result and commit. Code blocks define essential contracts or algorithms, not complete framework boilerplate. Read the installed SDK declarations before implementing framework calls.
