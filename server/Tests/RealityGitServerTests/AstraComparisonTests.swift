@@ -47,6 +47,9 @@ final class AstraComparisonTests: XCTestCase {
         try await waitForCall(gate)
         let delayed = try await subject.observe(frame(3))
         XCTAssertEqual(delayed.status, .candidate)
+        let activeState = await subject.comparisonStateForTesting()
+        XCTAssertTrue(activeState.active)
+        XCTAssertEqual(activeState.pendingFrame, 3)
         await gate.release()
         var reply = delayed
         for id in 4...100 {

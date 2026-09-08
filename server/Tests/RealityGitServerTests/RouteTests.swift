@@ -150,6 +150,22 @@ final class RouteTests: XCTestCase {
         _ = try await worker.observe(FrameRequest(key: testKey(object: 3, frame: 3, captureTime: 3), jpeg: Data([1])))
     }
 
+    func testRejectedCandidateRetiresAndTemporarilySkipsOnlyItsRegion() throws {
+        let jpeg = try candidateFixtureJPEG()
+        let engine = VisionLocalizer()
+        let reference = FrameRequest(key: testKey(frame: 1, captureTime: 1), jpeg: jpeg, seedRect: [0.2, 0.2, 0.4, 0.4], isReference: true)
+        _ = try engine.localize(reference, nil)
+        let rect = CGRect(x: 0.2, y: 0.4, width: 0.4, height: 0.4)
+        let candidate = try engine.initializeCandidateForTesting(reference, rect: rect)
+        let id = try XCTUnwrap(candidate.candidateID)
+        let rejected = try engine.localize(FrameRequest(key: testKey(frame: 2, captureTime: 1.2), jpeg: jpeg), reference, rejectedCandidateID: id)
+        XCTAssertNotEqual(rejected.candidateID, id)
+        XCTAssertNotEqual(rejected.status, .tracked)
+        XCTAssertFalse(engine.proposalAllowed(rect, at: 1.3))
+        XCTAssertTrue(engine.proposalAllowed(CGRect(x: 0.8, y: 0.8, width: 0.1, height: 0.1), at: 1.3))
+        XCTAssertTrue(engine.proposalAllowed(rect, at: 3.21))
+    }
+
     func testCandidateVisionContinuityPromotionAndGapRetirement() throws {
         let jpeg = try candidateFixtureJPEG()
         let engine = VisionLocalizer()
