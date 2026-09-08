@@ -26,15 +26,21 @@ final class SessionCoordinator: ObservableObject {
         frameID &+= 1
         return ObservationKey(sessionID: sessionID, objectID: objectID, frameID: frameID, captureTime: sample.timestamp)
     }
-    func ingest(_ result: LocalTrackingResult, key: ObservationKey, now: Double) {
+    func ingest(_ result: LocalTrackingResult, key: ObservationKey, now: Double, visibility: VisibilityEvidence = .unknown) {
         guard key.sessionID == sessionID, key.objectID == objectID,
               now >= key.captureTime, now - key.captureTime <= 0.5 else { return }
         guard let position = result.worldPosition, let bounds = result.worldBounds,
-              result.confidence >= 0.6 else { loseCurrent(); return }
+              result.confidence >= 0.6 else {
+            current = nil
+            reducer?.observe(position: nil, identityConfirmed: false, visibility: visibility, time: key.captureTime, frameID: key.frameID)
+            state = reducer?.state ?? .unchanged
+            message = reference == nil ? "Capturing · hold still, or draw a box around the object." : (state == .absent ? "Absent · remembered shape marks its place." : "Looking for remembered object")
+            return
+        }
         if reference == nil {
-            // Only the first actual mask-backed sample may create the immutable reference.
-            guard result.referenceRect != nil,
-                  let reference = ReferenceState(key: key, position: position, bounds: bounds) else { return }
+            // Freeze the first supported depth surface; later observations cannot replace it.
+            guard result.referenceRect != nil, result.capturedPoints.count >= 12,
+                  let reference = ReferenceState(key: key, position: position, bounds: bounds, points: result.capturedPoints) else { return }
             self.reference = reference
             reconciler = Reconciler(referencePosition: position, sessionID: sessionID, objectID: objectID)
             reducer = DiffReducer(referencePosition: position)
@@ -45,12 +51,16 @@ final class SessionCoordinator: ObservableObject {
         reducer?.observe(position: position, identityConfirmed: true, visibility: .visibleOccupied,
             time: key.captureTime, frameID: key.frameID)
         state = reducer?.state ?? .unchanged
-        message = state == .moved ? "Moved · red marks the remembered place, green follows the object." : "Reference saved · move the object to compare."
+        switch state {
+        case .moved: message = "Moved · red marks the remembered place, green follows the object."
+        case .absent: message = "Checking returned object…"
+        case .unchanged: message = "Remembered · move the object to compare."
+        }
     }
     func loseCurrent() {
-        current = nil; reducer?.interruptConfirmation()
+        current = nil
         if reference != nil {
-            let next = state == .moved ? "Moved · current position uncertain." : "Reference saved · current position uncertain."
+            let next = state == .absent ? "Absent · remembered shape marks its place." : (state == .moved ? "Moved · looking for remembered object." : "Looking for remembered object")
             if message != next { message = next }
         }
     }

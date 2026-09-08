@@ -93,6 +93,10 @@ struct CameraScreen: View {
                     }
 
                     ReferenceStatus(session: controller.objectSession)
+                    if controller.objectSession.reference != nil {
+                        Text(controller.ghostStatus).font(.caption2).foregroundStyle(.secondary)
+                        Toggle("Preview remembered shape", isOn: $controller.previewReference).font(.caption)
+                    }
                     AssistantControls(assistant: controller.assistant)
 
                     Text(controller.hasSelection ? "OBJECT TRACKING CHECK · 02" : "WORLD TRACKING CHECK · 01")
@@ -226,7 +230,7 @@ private struct ReferenceStatus: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(session.message).font(.subheadline.weight(.medium)).foregroundStyle(.mint)
             if session.reference != nil {
-                Text("Approximate bounds · removal detection pending")
+                Text("Captured depth shape · original reference retained")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

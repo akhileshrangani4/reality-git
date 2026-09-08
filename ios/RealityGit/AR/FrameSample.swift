@@ -85,3 +85,26 @@ final class FrameSample: @unchecked Sendable {
         return output
     }
 }
+
+extension FrameSample {
+    /// Camera YCbCr sampled only at accepted depth pixels.
+    func colors(at pixels: [(Int, Int)]) -> [SIMD3<Float>] {
+        CVPixelBufferLockBaseAddress(image, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+        guard CVPixelBufferGetPlaneCount(image) == 2,
+              let yBase = CVPixelBufferGetBaseAddressOfPlane(image, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(image, 1) else {
+            return pixels.map { _ in SIMD3(repeating: 0.7) }
+        }
+        let width = CVPixelBufferGetWidth(image), height = CVPixelBufferGetHeight(image)
+        return pixels.map { pixel in
+            let x = min(width - 1, pixel.0 * width / depthWidth)
+            let y = min(height - 1, pixel.1 * height / depthHeight)
+            let luma = Float(yBase.assumingMemoryBound(to: UInt8.self)[y * CVPixelBufferGetBytesPerRowOfPlane(image, 0) + x]) / 255
+            let uv = uvBase.assumingMemoryBound(to: UInt8.self)
+            let index = (y / 2) * CVPixelBufferGetBytesPerRowOfPlane(image, 1) + (x / 2) * 2
+            let cb = Float(uv[index]) / 255 - 0.5, cr = Float(uv[index + 1]) / 255 - 0.5
+            return simd_clamp(SIMD3(luma + 1.402 * cr, luma - 0.344136 * cb - 0.714136 * cr, luma + 1.772 * cb), SIMD3(repeating: 0), SIMD3(repeating: 1))
+        }
+    }
+}

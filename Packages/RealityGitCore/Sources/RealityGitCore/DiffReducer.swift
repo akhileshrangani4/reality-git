@@ -9,6 +9,7 @@ public struct DiffReducer: Sendable {
     private var pending: DiffState?
     private var count = 0
     private var started: Double = 0
+    private var lastEvidenceTime: Double = -.infinity
     private var lastFrame: UInt64?
     private var lastTime: Double = -.infinity
     public init(referencePosition: SIMD3<Float>) { self.referencePosition = referencePosition }
@@ -17,18 +18,24 @@ public struct DiffReducer: Sendable {
                                  visibility: VisibilityEvidence, time: Double, frameID: UInt64) {
         guard time.isFinite, time >= lastTime, lastFrame == nil || frameID > lastFrame! else { return }
         lastFrame = frameID; lastTime = time
+        if time - lastEvidenceTime > 1.5 { interruptConfirmation() }
         let desired: DiffState?
         let duration: Double
         if let position, identityConfirmed, [position.x, position.y, position.z].allSatisfy(\.isFinite) {
             let distance = simd_distance(position, referencePosition)
             if distance > 0.15 { desired = .moved }
             else if distance < 0.08 { desired = .unchanged }
-            else { desired = nil }
+            else { desired = nil; interruptConfirmation() }
             duration = 0.5
         } else if visibility == .visibleEmpty {
             desired = .absent; duration = 1
         } else { desired = nil; duration = 0.5 }
-        guard let desired, desired != state else { interruptConfirmation(); return }
+        guard let desired else {
+            if time - lastEvidenceTime > 1.5 { interruptConfirmation() }
+            return
+        }
+        lastEvidenceTime = time
+        guard desired != state else { interruptConfirmation(); return }
         if pending != desired { pending = desired; count = 1; started = time }
         else { count += 1 }
         if count >= 3, time - started >= duration { state = desired; interruptConfirmation() }

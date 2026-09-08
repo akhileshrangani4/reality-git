@@ -1,0 +1,54 @@
+import XCTest
+import simd
+@testable import RealityGitCore
+
+final class CapturedReferenceTests: XCTestCase {
+    func testVisibilityDoesNotCallOffscreenOrOcclusionAbsent() {
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: 0.2, count: 20), projectedCount: 20, totalCount: 100), .unknown)
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: -0.2, count: 100), projectedCount: 100, totalCount: 100), .occluded)
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: 0.2, count: 100), projectedCount: 100, totalCount: 100), .visibleEmpty)
+        XCTAssertEqual(ReferenceVisibility.classify(differences: Array(repeating: 0.2, count: 5), projectedCount: 100, totalCount: 100), .unknown)
+    }
+    func testFallbackRejectsCloserHandAndAccountsForCameraMotion() {
+        XCTAssertFalse(ForegroundDepth.allowsFallback(measuredDepth: 0.7, supportedWorld: SIMD3(0,0,-1), cameraToWorld: matrix_identity_float4x4))
+        XCTAssertFalse(ForegroundDepth.allowsFallback(measuredDepth: 1.3, supportedWorld: SIMD3(0,0,-1), cameraToWorld: matrix_identity_float4x4))
+        var movedCamera = matrix_identity_float4x4
+        movedCamera.columns.3.z = -0.3
+        XCTAssertTrue(ForegroundDepth.allowsFallback(measuredDepth: 0.7, supportedWorld: SIMD3(0,0,-1), cameraToWorld: movedCamera))
+    }
+    func testCaptureIsBounded() throws {
+        let key = ObservationKey(sessionID: UUID(), objectID: UUID(), frameID: 1, captureTime: 1)
+        let points = Array(repeating: CapturedPoint(position: .zero, color: .one), count: 9000)
+        let ref = try XCTUnwrap(ReferenceState(key: key, position: .zero, bounds: .one, points: points))
+        XCTAssertEqual(ref.points.count, 8000)
+    }
+    func testShortMissingSamplePausesMoveConfirmation() {
+        var reducer = DiffReducer(referencePosition: .zero)
+        reducer.observe(position: SIMD3(0.2,0,0), identityConfirmed: true, visibility: .unknown, time: 0, frameID: 1)
+        reducer.observe(position: nil, identityConfirmed: false, visibility: .unknown, time: 0.2, frameID: 2)
+        reducer.observe(position: SIMD3(0.2,0,0), identityConfirmed: true, visibility: .unknown, time: 0.4, frameID: 3)
+        reducer.observe(position: SIMD3(0.2,0,0), identityConfirmed: true, visibility: .unknown, time: 0.6, frameID: 4)
+        XCTAssertEqual(reducer.state, .moved)
+        for i in 5...7 { reducer.observe(position: .zero, identityConfirmed: true, visibility: .visibleOccupied, time: Double(i) * 0.3, frameID: UInt64(i)) }
+        XCTAssertEqual(reducer.state, .unchanged)
+    }
+    func testAbsentNeedsOneSecondAndRestorationClearsIt() {
+        var reducer = DiffReducer(referencePosition: .zero)
+        for i in 0...2 { reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: Double(i) * 0.4, frameID: UInt64(i)) }
+        XCTAssertEqual(reducer.state, .unchanged)
+        reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: 1.1, frameID: 3)
+        XCTAssertEqual(reducer.state, .absent)
+        for i in 4...6 { reducer.observe(position: .zero, identityConfirmed: true, visibility: .visibleOccupied, time: Double(i) * 0.3, frameID: UInt64(i)) }
+        XCTAssertEqual(reducer.state, .unchanged)
+    }
+    func testForegroundRequiresSeparatedDepthComponent() {
+        var depth = Array(repeating: Float(1), count: 1600)
+        let confidence = Array(repeating: UInt8(2), count: 1600)
+        let rect = CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)
+        XCTAssertTrue(ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect).isEmpty)
+        for y in 14..<26 { for x in 14..<26 { depth[y * 40 + x] = 0.8 } }
+        let points = ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect)
+        XCTAssertEqual(points.count, 144)
+        XCTAssertTrue(points.allSatisfy { depth[$0] == 0.8 })
+    }
+}

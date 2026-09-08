@@ -10,6 +10,8 @@ final class ARSessionController: NSObject, ObservableObject {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
     @Published private(set) var status: TrackingStatus = .idle
+    @Published var previewReference = false
+    @Published private(set) var ghostStatus = "Capturing depth shape…"
     @Published private(set) var hasDepth = false
     @Published private(set) var canReset = false
 
@@ -88,7 +90,7 @@ final class ARSessionController: NSObject, ObservableObject {
 
     func pause() {
         wantsRunning = false
-        invalidateSelection()
+        suspendSelection()
         guard isRunning else { return }
         arView.session.pause()
         isRunning = false
@@ -98,6 +100,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     func reset() {
+        previewReference = false
         #if DEBUG
         print("AR explicit reset")
         #endif
@@ -193,8 +196,9 @@ final class ARSessionController: NSObject, ObservableObject {
             objectSession.loseCurrent()
         }
         diffRenderer.update(in: arView, reference: objectSession.reference, current: objectSession.current,
-            showRed: objectSession.state == .moved, showGreen: objectSession.state == .moved,
+            showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state == .moved,
             reliable: next.isReady)
+        if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }
     }
 
     func select(point: CGPoint) {
@@ -250,9 +254,11 @@ final class ARSessionController: NSObject, ObservableObject {
             selectionMessage = "Wait for depth, then select the object again."
             return
         }
-        assistant.resetSelection()
-        objectSession.reset()
-        diffRenderer.reset()
+        if objectSession.reference == nil {
+            assistant.resetSelection()
+            objectSession.reset()
+            diffRenderer.reset()
+        }
         resultCameraPose = nil
         trackingGeneration = UUID()
         #if DEBUG
@@ -277,6 +283,40 @@ final class ARSessionController: NSObject, ObservableObject {
         } else {
             submit(sample, selection: selection)
         }
+    }
+
+    private func suspendSelection() {
+        trackingGeneration = UUID()
+        pendingSelection = nil
+        resultCameraPose = nil
+        selectionRect = nil
+        selectedPosition = nil
+        objectSession.loseCurrent()
+    }
+
+    private func referenceVisibility(sample: FrameSample, trackedRect: CGRect?) -> VisibilityEvidence {
+        guard let reference = objectSession.reference else { return .unknown }
+        let inverse = sample.cameraToWorld.inverse
+        let width = Float(CVPixelBufferGetWidth(sample.image)), height = Float(CVPixelBufferGetHeight(sample.image))
+        var comparisons: [Float] = []
+        var projected = 0
+        for point in reference.points {
+            let world = reference.position + point.position
+            let p = inverse * SIMD4(world.x, world.y, world.z, 1)
+            guard p.z < -0.1 else { continue }
+            let u = (sample.intrinsics[0][0] * p.x / -p.z + sample.intrinsics[2][0]) / width
+            let v = (sample.intrinsics[1][1] * -p.y / -p.z + sample.intrinsics[2][1]) / height
+            guard u > 0, u < 1, v > 0, v < 1 else { continue }
+            projected += 1
+            if let trackedRect, trackedRect.contains(CGPoint(x: Double(u), y: Double(v))) { return .visibleOccupied }
+            let x = min(sample.depthWidth - 1, Int(u * Float(sample.depthWidth)))
+            let y = min(sample.depthHeight - 1, Int(v * Float(sample.depthHeight)))
+            let i = y * sample.depthWidth + x
+            if sample.confidence[i] >= 2, sample.depth[i].isFinite, sample.depth[i] > 0 {
+                comparisons.append(sample.depth[i] + p.z)
+            }
+        }
+        return ReferenceVisibility.classify(differences: comparisons, projectedCount: projected, totalCount: reference.points.count)
     }
 
     private func invalidateSelection() {
@@ -315,7 +355,7 @@ final class ARSessionController: NSObject, ObservableObject {
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
-                objectSession.ingest(result, key: key, now: latest.timestamp)
+                objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: result.rect))
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 imageRect = result.rect
@@ -347,7 +387,7 @@ extension ARSessionController: @preconcurrency ARSessionDelegate {
         print("AR interrupted")
         #endif
         guard wantsRunning else { return }
-        invalidateSelection()
+        suspendSelection()
         marker?.isEnabled = false
         hasDepth = false
         status = .interrupted
@@ -364,7 +404,7 @@ extension ARSessionController: @preconcurrency ARSessionDelegate {
     func session(_ session: ARSession, didFailWithError error: any Error) {
         guard wantsRunning else { return }
         isRunning = false
-        invalidateSelection()
+        suspendSelection()
         marker?.isEnabled = false
         hasDepth = false
         status = .failed(error.localizedDescription)
