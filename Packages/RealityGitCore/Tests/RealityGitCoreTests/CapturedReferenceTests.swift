@@ -114,6 +114,23 @@ final class CapturedReferenceTests: XCTestCase {
         let larger = try XCTUnwrap(DepthComponentSignature(points: points.map { SIMD3($0.x * 2, $0.y, $0.z) }, colors: colors, support: support))
         XCTAssertFalse(initial.accepts(larger, confidence: 0.95))
     }
+    func testMaskAndDepthSupportShareTrackedBoxDespiteSmallerMaskExtent() throws {
+        let trackedRect = CGRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5)
+        let maskRect = CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.3)
+        let imagePoints: [SIMD2<Float>] = (0..<64).map { i in
+            let u = Float(0.3) + (Float(i % 8) + 0.5) * 0.3 / 8
+            let v = Float(0.3) + (Float(i / 8) + 0.5) * 0.3 / 8
+            return SIMD2(u, v)
+        }
+        let points = imagePoints.map { SIMD3($0.x, $0.y, Float(-1)) }
+        let colors = Array(repeating: SIMD3<Float>(0.2, 0.3, 0.8), count: 64)
+        let trackedSupport = DepthComponentSignature.normalizedSupport(imagePoints: imagePoints, trackingRect: trackedRect)
+        let mask = try XCTUnwrap(DepthComponentSignature(points: points, colors: colors, support: trackedSupport))
+        let moved = try XCTUnwrap(DepthComponentSignature(points: points.map { $0 + SIMD3(0,0,0.3) }, colors: colors, support: trackedSupport))
+        XCTAssertTrue(mask.accepts(moved, confidence: 0.9))
+        let mismatched = try XCTUnwrap(DepthComponentSignature(points: points, colors: colors, support: DepthComponentSignature.normalizedSupport(imagePoints: imagePoints, trackingRect: maskRect)))
+        XCTAssertFalse(mismatched.accepts(moved, confidence: 0.9), "This fixture reproduces the former mixed-coordinate rejection")
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

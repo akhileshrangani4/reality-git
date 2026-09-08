@@ -256,7 +256,11 @@ actor LocalObjectTracker {
             return supportedResult(predicted: predicted, maskRect: rect, position: nil, confidence: trackingConfidence,
                 message: "Object selected. Move closer for a reliable depth measurement.")
         }
-        support = pixels.map { (Float((Double($0.0) + 0.5) / Double(sample.depthWidth) - rect.minX) / Float(rect.width), Float((Double($0.1) + 0.5) / Double(sample.depthHeight) - rect.minY) / Float(rect.height)) }
+        // Both mask and fresh depth components use the current VN box. The mask
+        // extent may be smaller, so normalizing it to its own extent changes identity.
+        support = DepthComponentSignature.normalizedSupport(imagePoints: pixels.map {
+            SIMD2((Float($0.0) + 0.5) / Float(sample.depthWidth), (Float($0.1) + 0.5) / Float(sample.depthHeight))
+        }, trackingRect: predicted ?? rect).map { ($0.x, $0.y) }
         supportTime = sample.timestamp
         let colors = sample.colors(at: pixels)
         componentSignature = DepthComponentSignature(points: points, colors: colors, support: support.map { SIMD2($0.0, $0.1) })
@@ -319,7 +323,9 @@ actor LocalObjectTracker {
                 cameraPoints.append(p); pixels.append((x,y))
             }
             let colors = sample.colors(at: pixels)
-            let currentSupport = pixels.map { SIMD2(Float((Double($0.0)+0.5)/Double(sample.depthWidth)-rect.minX)/Float(rect.width), Float((Double($0.1)+0.5)/Double(sample.depthHeight)-rect.minY)/Float(rect.height)) }
+            let currentSupport = DepthComponentSignature.normalizedSupport(imagePoints: pixels.map {
+                SIMD2((Float($0.0) + 0.5) / Float(sample.depthWidth), (Float($0.1) + 0.5) / Float(sample.depthHeight))
+            }, trackingRect: predicted ?? rect)
             let signature = DepthComponentSignature(points: cameraPoints, colors: colors, support: currentSupport)
             let associated = signature.map { candidate in componentSignature.map { $0.accepts(candidate, confidence: confidence) } ?? (lastSupportedWorld == nil) } ?? false
             if let center = Projection.medianPosition(cameraPoints), cameraPoints.count >= 12, associated {

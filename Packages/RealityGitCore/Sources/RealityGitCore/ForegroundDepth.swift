@@ -77,6 +77,11 @@ public enum ForegroundDepth {
 /// Association checks for a freshly separated component. Unlike propagated
 /// support, this evidence can move in depth, but must retain object appearance.
 public struct DepthComponentSignature: Sendable {
+    public static func normalizedSupport(imagePoints: [SIMD2<Float>], trackingRect: CGRect) -> [SIMD2<Float>] {
+        guard trackingRect.width > 0, trackingRect.height > 0 else { return [] }
+        return imagePoints.map { SIMD2(($0.x - Float(trackingRect.minX)) / Float(trackingRect.width), ($0.y - Float(trackingRect.minY)) / Float(trackingRect.height)) }
+    }
+
     private let size: SIMD2<Float>
     private let color: SIMD3<Float>
     private let cells: Set<Int>
