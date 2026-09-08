@@ -24,7 +24,7 @@
 
 ## Starting point and choices
 
-The repository contains documentation only. Verified environment: Apple Silicon, Xcode 26.6, iOS SDK 26.5, Swift 6.3.3. Use an iOS 17 minimum and macOS 14 minimum as implementation defaults; build with the installed toolchain. Device signing and live Astra access must be verified during execution, not assumed from this environment.
+The repository contains documentation only. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the user is installing iOS 27 beta 8 on the iPhone, with completion not yet verified. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
 
 Keep one integrated plan because the Mac and phone jointly implement a single interaction. Every task below has its own testable result and commit. Code blocks define essential contracts or algorithms, not complete framework boilerplate. Read the installed SDK declarations before implementing framework calls.
 
@@ -50,8 +50,8 @@ Keep Vision as the baseline. After task 3, compare real temporal EdgeTAM on the 
 
 Core: `swift test --package-path Packages/RealityGitCore`.
 Server: `swift test --package-path server`.
-App compile: `xcodebuild -project ios/RealityGit.xcodeproj -scheme RealityGit -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`.
-Device: select the actual connected iPhone and available signing team in Xcode. Do not invent a device ID or team. Each task ends with staging only its files and a descriptive commit. Do not run implementation during planning.
+App compile: `xcodebuild -project ios/RealityGit.xcodeproj -scheme RealityGit -destination 'generic/platform=iOS' -configuration Debug CODE_SIGNING_ALLOWED=NO build`.
+No simulator runtime is required. The unsigned generic-device build checks compilation only; running on the phone requires signing. Device: select the actual connected iPhone and available signing team in Xcode. Do not invent a device ID or team. Each task ends with staging only its files and a descriptive commit. Do not run implementation during planning.
 
 ### Task 1: Stable camera view and world anchor
 
@@ -238,7 +238,7 @@ try process.run()
 
 ### Task 8: Render aligned red Gaussian ghosts
 
-**September 8 update:** The user is willing to install iOS 27. Before the MetalSplatter steps below, verify iOS 27 on the device and Xcode 27 availability on the Mac, then test `GaussianSplatComponent` with a small known asset. Populate its buffers using the documented GaussianSplatResource API; verify red color, opacity, metric scale and anchored camera motion. If this succeeds, implement SplatOverlay using a RealityKit entity and skip the separate Metal renderer steps. Use an iOS 27 deployment target for that prototype. The current iOS 17 baseline applies only before this decision; no upgrade has been performed. Retain MetalSplatter as the fallback if the native test fails. Record the selected path and actual OS/SDK in the alignment report.
+**September 8 update:** The user is willing to install iOS 27. Before the MetalSplatter steps below, verify completion of iOS 27 installation on the device (Xcode 27 and its SDK are now verified), then test `GaussianSplatComponent` with a small known asset. Populate its buffers using the documented GaussianSplatResource API; verify red color, opacity, metric scale and anchored camera motion. If this succeeds, implement SplatOverlay using a RealityKit entity and skip the separate Metal renderer steps. Use an iOS 27 deployment target for that prototype. The iOS deployment target is now 27; the Mac toolchain is verified and the phone upgrade is in progress. Retain MetalSplatter as the fallback if the native test fails. Record the selected path and actual OS/SDK in the alignment report.
 
 **Files:** Create iOS `Rendering/SplatOverlay.swift`, `SplatAssetLoader.swift`; modify CameraScreen, DiffRenderer and project package dependencies; add `docs/testing/splat-alignment.md`.
 
