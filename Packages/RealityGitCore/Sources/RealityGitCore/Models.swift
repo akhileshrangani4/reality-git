@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ObservationKey: Codable, Equatable, Sendable {
+public struct ObservationKey: Codable, Hashable, Sendable {
     public let sessionID: UUID
     public let objectID: UUID
     public let frameID: UInt64
