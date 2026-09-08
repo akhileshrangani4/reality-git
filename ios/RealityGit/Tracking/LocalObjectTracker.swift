@@ -50,6 +50,7 @@ actor LocalObjectTracker {
                 self.tracked = nil
                 return lost()
             }
+            self.tracked = result
             predicted = ImageCoordinates.topLeftRect(visionRect: result.boundingBox)
             trackingConfidence = result.confidence
         }
@@ -124,7 +125,16 @@ actor LocalObjectTracker {
                 return lost()
             }
         }
-        tracked = VNDetectedObjectObservation(boundingBox: ImageCoordinates.visionRect(topLeftRect: rect))
+        if selection != nil {
+            // Initialize the sequence on the exact image that produced this mask.
+            // Later requests must feed back Vision's result, preserving its UUID.
+            let seed = VNDetectedObjectObservation(boundingBox: ImageCoordinates.visionRect(topLeftRect: rect))
+            let initialize = VNTrackObjectRequest(detectedObjectObservation: seed)
+            initialize.trackingLevel = .accurate
+            try sequence.perform([initialize], on: sample.image, orientation: .up)
+            guard let result = initialize.results?.first as? VNDetectedObjectObservation else { return lost() }
+            tracked = result
+        }
 
         var points: [SIMD3<Float>] = []
         let imageWidth = CVPixelBufferGetWidth(sample.image)
