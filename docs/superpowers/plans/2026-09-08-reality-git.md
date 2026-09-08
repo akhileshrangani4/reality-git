@@ -24,7 +24,7 @@
 
 ## Starting point and choices
 
-Implementation has started; see task status below. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the user is installing iOS 27 beta 8 on the iPhone, with completion not yet verified. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
+Implementation has started; see task status below. Verified updated environment: Apple Silicon, selected Xcode 27.0 beta 6 (27A5252f), iOS SDK 27.0. GaussianSplatComponent is present in the installed RealityFoundation Swift interface. Target iOS 27 for the native splat prototype; the connected iPhone 15 Pro runs iOS 27 build 24A5430a; signed builds install and launch successfully. Use macOS 14 as the server baseline unless the selected trainer requires a higher version. Device signing and live Astra access must be verified during execution, not assumed from this environment.
 
 Keep one integrated plan because the Mac and phone jointly implement a single interaction. Every task below has its own testable result and commit. Code blocks define essential contracts or algorithms, not complete framework boilerplate. Read the installed SDK declarations before implementing framework calls.
 
@@ -137,6 +137,8 @@ Here `fixtureJPEG` is a checked-in tiny synthetic image and `worker` is the Visi
 - [ ] Record a short clip with occlusion, camera movement and a lookalike. Compare baseline Vision with temporal EdgeTAM on the Mac before choosing an enhanced worker. Verify MPS execution, bounded streaming memory and source-frame IDs; keep Vision if the candidate fails or adds no measurable benefit. Record results in `docs/testing/tracker-comparison.md`. Do not substitute repeated fixed-point segmentation for temporal propagation.
 - [ ] Run server tests, core tests, and app build. On the phone verify repeated Mac detections and continued local tracking after stopping the server. Commit `feat: add continuous Mac vision assistance`.
 
+**Execution status:** Mac service, bounded client, device transport, and source-paired local recovery are implemented and reviewed. Hotspot transport is verified; the user confirms distance recovery works. Rapid-jolt/out-of-frame recovery remains intermittent and further tuning is explicitly deferred by the user. EdgeTAM comparison and complete disconnect validation remain pending.
+
 ### Task 4: Immutable reference and ordered reconciliation
 
 **Files:** Create core `ReferenceState.swift`, `Reconciler.swift`, `Tests/RealityGitCoreTests/ReconcilerTests.swift`; create `ios/RealityGit/App/SessionCoordinator.swift`; update ARSessionController and AssistantClient.
@@ -160,6 +162,8 @@ XCTAssertEqual(r.referencePosition, .zero)
 - [ ] Integrate local and Mac results through SessionCoordinator. Recover source calibration only from FrameBuffer. Missing source means discard positional result. Keep server candidate identity unresolved after track loss until confirmed.
 - [ ] Test mismatched sessions, duplicate local/server reports, expired frames, and reset invalidation. Reset cancels requests, replaces session ID, clears reference, and drops previous jobs.
 - [ ] Run core tests and app build; commit `feat: preserve reference and reconcile ordered observations`.
+
+**Incremental execution status:** bd07fac implements immutable masked reference and ordered local metric observations, including fresh local geometry after Mac recovery. Core tests and signed device build pass. Direct server positional correction and unified transport/metric keys remain pending.
 
 ### Task 5: Confirm changes and render proxies
 
@@ -185,6 +189,8 @@ XCTAssertEqual(diff.state, .absent)
 - [ ] Build visibility evidence by projecting reference bounds, checking that the region is in-frame, and comparing confident live depth to captured reference surface samples. Closer surfaces mean occluded; missing depth means unknown. A detector miss alone is insufficient. Accept empty only with repeated unoccluded region checks and negative local/Mac evidence.
 - [ ] Render reference red at 25% opacity and current green at 25% using RealityKit boxes sized to captured bounds. Keep red after a confirmed move when current tracking is lost; hide green on stale/uncertain location. Hide all overlays while AR tracking is unreliable. Resume only in the retained coordinate frame; provide recapture after failed recovery.
 - [ ] Run core tests and app build. Physically verify visible movement, turn-away movement, occlusion, removal, and position-based restoration. Record tuned thresholds, then commit `feat: display confirmed object diffs with visibility checks`.
+
+**Incremental execution status:** bd07fac renders reviewed red/green proxies with confirmed movement/restoration and hides stale green/unreliable AR overlays. Installed on device; physical move/restore check pending. Visibility-confirmed absence remains unimplemented and is not inferred from tracking loss.
 
 ### Task 6: Guided calibrated capture
 

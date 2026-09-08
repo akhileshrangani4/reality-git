@@ -1,6 +1,6 @@
 # Astra integration grounding
 
-Verified September 8, 2026 against official OpenAI documentation. Implementation and live access remain pending.
+Verified September 8, 2026 against official OpenAI documentation. Live text access is verified; image-label integration is in progress.
 
 ## Verified provider contract
 
@@ -16,6 +16,6 @@ One request at a time; initially no more often than every five seconds, with a c
 
 ## Access and validation still required
 
-No `OPENAI_API_KEY` is available in the current process and no project `.env` exists. No credentials were printed or live requests made. Supply the key through the server environment only when integration is ready; never put it in the iOS app, git, or chat. Project/model access has not been verified by the existence of public documentation.
+The user supplied a local ignored environment file. A live Responses request to `gpt-6-astra` completed and returned the requested text on September 8. Credentials were not printed or committed. Production server startup must load the key into `OPENAI_API_KEY`; never put it in the iOS app or git. Image comparison and semantic accuracy remain unverified.
 
 Remaining checks: authenticate, run one real two-image comparison, verify ambiguous lookalikes return uncertainty, measure response latency, and exercise actual phone recovery. Mocked adapter tests cannot complete this milestone.
