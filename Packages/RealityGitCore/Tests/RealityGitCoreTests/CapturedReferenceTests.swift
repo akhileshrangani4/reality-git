@@ -166,6 +166,15 @@ final class CapturedReferenceTests: XCTestCase {
         XCTAssertFalse(visible(reliable: false))
         XCTAssertFalse(visible(drawing: true))
     }
+    func testReturnedMetricInHysteresisBandUsesCurrent3DOverlay() {
+        var diff = DiffReducer(referencePosition: .zero)
+        for frame in 0...2 { diff.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty, time: Double(frame) * 0.6, frameID: UInt64(frame)) }
+        diff.observe(position: SIMD3(0.13,0,0), identityConfirmed: true, visibility: .visibleOccupied, time: 1.4, frameID: 3)
+        XCTAssertEqual(diff.state, .absent)
+        XCTAssertTrue(diff.state.showsCurrentOverlay, "Trusted current metric can render green before state reconciliation")
+        XCTAssertFalse(CurrentScreenOverlay.isVisible(state: diff.state, freshLocalTrack: true, confidence: 0.9, hasCurrentWorldPosition: true, arReliable: true, drawing: false))
+        XCTAssertFalse(DiffState.unchanged.showsCurrentOverlay)
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

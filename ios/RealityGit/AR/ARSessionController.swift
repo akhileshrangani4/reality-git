@@ -206,7 +206,7 @@ final class ARSessionController: NSObject, ObservableObject {
             objectSession.loseCurrent()
         }
         diffRenderer.update(in: arView, reference: objectSession.reference, current: objectSession.current,
-            showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state == .moved,
+            showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state.showsCurrentOverlay,
             reliable: next.isReady)
         if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }
     }

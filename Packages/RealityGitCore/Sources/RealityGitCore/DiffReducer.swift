@@ -1,7 +1,10 @@
 import Foundation
 import simd
 
-public enum DiffState: Sendable { case unchanged, moved, absent }
+public enum DiffState: Sendable {
+    case unchanged, moved, absent
+    public var showsCurrentOverlay: Bool { self == .moved || self == .absent }
+}
 public enum VisibilityEvidence: Sendable { case unknown, occluded, visibleEmpty, visibleOccupied }
 public struct DiffReducer: Sendable {
     public let referencePosition: SIMD3<Float>
@@ -46,7 +49,7 @@ public struct DiffReducer: Sendable {
 public enum CurrentScreenOverlay {
     public static func isVisible(state: DiffState, freshLocalTrack: Bool, confidence: Float,
                                  hasCurrentWorldPosition: Bool, arReliable: Bool, drawing: Bool) -> Bool {
-        (state == .moved || state == .absent) && freshLocalTrack && confidence.isFinite && confidence >= 0.6 &&
+        state.showsCurrentOverlay && freshLocalTrack && confidence.isFinite && confidence >= 0.6 &&
             !hasCurrentWorldPosition && arReliable && !drawing
     }
 }
