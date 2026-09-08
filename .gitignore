@@ -11,3 +11,6 @@ xcuserdata/
 
 # Temporary research downloads and scratch files
 work/
+
+# Isolated implementation checkouts
+.worktrees/
