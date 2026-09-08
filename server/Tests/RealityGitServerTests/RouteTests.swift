@@ -1,13 +1,16 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import RealityGitCore
 import Vapor
 import XCTVapor
+import UniformTypeIdentifiers
 @testable import RealityGitServer
 
 final class RouteTests: XCTestCase {
     func testHealthAndExactKeyEcho() throws {
         let key = testKey(frame: 42)
-        let worker = VisionWorker(localizer: { request, _ in
+        let worker = VisionWorker(validateImageMetadata: false, localizer: { request, _ in
             LocalizationResult(rect: request.seedRect, confidence: 0.8, candidateID: nil, status: .tracked)
         })
         let app = Application(.testing)
@@ -25,7 +28,7 @@ final class RouteTests: XCTestCase {
     func testMalformedRectangleAndBodyAreRejected() throws {
         let app = Application(.testing)
         defer { app.shutdown() }
-        try configure(app, worker: VisionWorker(localizer: { _, _ in fatalError("must not run") }))
+        try configure(app, worker: VisionWorker(validateImageMetadata: false, localizer: { _, _ in fatalError("must not run") }))
         let malformed = FrameRequest(key: testKey(), jpeg: Data([1]), seedRect: [0.9, 0.9, 0.2, 0.2])
         try app.test(.POST, "observe", beforeRequest: { try $0.content.encode(malformed) }) {
             XCTAssertEqual($0.status, .badRequest)
@@ -45,19 +48,21 @@ final class RouteTests: XCTestCase {
         }
     }
 
-    func testStaleFramesAndSessionBound() async throws {
-        let worker = VisionWorker(maxSessions: 1, localizer: { _, _ in
+    func testStaleFramesAndSequentialSelections() async throws {
+        let worker = VisionWorker(validateImageMetadata: false, localizer: { _, _ in
             LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
         })
         _ = try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: Data([1])))
         await XCTAssertThrowsErrorAsync { _ = try await worker.observe(FrameRequest(key: testKey(frame: 1), jpeg: Data([1]))) }
-        let other = ObservationKey(sessionID: UUID(), objectID: UUID(), frameID: 1, captureTime: 0)
-        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(FrameRequest(key: other, jpeg: Data([1]))) }
+        for index in 3...15 {
+            let key = testKey(object: UInt8(index), frame: UInt64(index), captureTime: Double(index))
+            _ = try await worker.observe(FrameRequest(key: key, jpeg: Data([1]), seedRect: [0.1, 0.1, 0.2, 0.2], isReference: true))
+        }
     }
 
     func testPendingObservationIsReplaceable() async throws {
         let gate = Gate()
-        let worker = VisionWorker(timeout: .seconds(2), localizer: { request, _ in
+        let worker = VisionWorker(timeout: .seconds(2), validateImageMetadata: false, localizer: { request, _ in
             if request.key.frameID == 1 { gate.wait() }
             return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
         })
@@ -76,7 +81,7 @@ final class RouteTests: XCTestCase {
 
     func testReferenceIsImmutableUntilNewSelection() async throws {
         let seen = LockedValues<ObservationKey?>()
-        let worker = VisionWorker(localizer: { request, reference in
+        let worker = VisionWorker(validateImageMetadata: false, localizer: { request, reference in
             seen.append(reference?.key)
             return LocalizationResult(rect: request.seedRect, confidence: 1, candidateID: nil,
                                       status: reference == nil ? .identityConfirmed : .tracked)
@@ -96,7 +101,7 @@ final class RouteTests: XCTestCase {
     func testTimedOutPendingWorkNeverRuns() async throws {
         let gate = Gate()
         let calls = LockedValues<UInt64>()
-        let worker = VisionWorker(timeout: .milliseconds(50), localizer: { request, _ in
+        let worker = VisionWorker(timeout: .milliseconds(50), validateImageMetadata: false, localizer: { request, _ in
             calls.append(request.key.frameID)
             if request.key.frameID == 1 { gate.wait() }
             return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
@@ -114,7 +119,7 @@ final class RouteTests: XCTestCase {
 
     func testFailedReferenceDoesNotBecomeImmutableReference() async throws {
         let calls = LockedValues<Bool>()
-        let worker = VisionWorker(localizer: { _, reference in
+        let worker = VisionWorker(validateImageMetadata: false, localizer: { _, reference in
             calls.append(reference != nil)
             if calls.values.count == 1 { throw ObservationError.invalidJPEG }
             return LocalizationResult(rect: nil, confidence: 1, candidateID: nil, status: .identityConfirmed)
@@ -126,12 +131,98 @@ final class RouteTests: XCTestCase {
         XCTAssertEqual(calls.values, [false, false])
     }
 
+    func testRetiredReferencesCannotReplaceCurrentSelection() async throws {
+        let worker = VisionWorker(validateImageMetadata: false, localizer: { _, _ in
+            LocalizationResult(rect: nil, confidence: 1, candidateID: nil, status: .identityConfirmed)
+        })
+        let seed = [0.1, 0.1, 0.2, 0.2]
+        let a = FrameRequest(key: testKey(object: 2, frame: 1, captureTime: 1), jpeg: Data([1]), seedRect: seed, isReference: true)
+        let b = FrameRequest(key: testKey(object: 3, frame: 2, captureTime: 2), jpeg: Data([1]), seedRect: seed, isReference: true)
+        _ = try await worker.observe(a)
+        _ = try await worker.observe(b)
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(a) }
+        let delayedA = FrameRequest(key: testKey(object: 2, frame: 99, captureTime: 1.5), jpeg: Data([1]), seedRect: seed, isReference: true)
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(delayedA) }
+        _ = try await worker.observe(FrameRequest(key: testKey(object: 3, frame: 3, captureTime: 3), jpeg: Data([1])))
+    }
+
+    func testProductionJPEGValidationAndVisionSequence() throws {
+        let jpeg = try fixtureJPEG(width: 64, height: 64)
+        let engine = VisionLocalizer()
+        let reference = FrameRequest(key: testKey(), jpeg: jpeg, seedRect: [0.2, 0.2, 0.4, 0.4], isReference: true)
+        let initialized = try engine.localize(reference, nil)
+        XCTAssertEqual(initialized.status, .identityConfirmed)
+        let firstObservation = try XCTUnwrap(engine.trackedObservationIDForTesting())
+        let next = FrameRequest(key: testKey(frame: 2), jpeg: jpeg)
+        _ = try engine.localize(next, reference)
+        XCTAssertEqual(engine.lastTrackingInputIDForTesting(), firstObservation)
+
+        XCTAssertThrowsError(try engine.localize(
+            FrameRequest(key: testKey(object: 3, frame: 3, captureTime: 3), jpeg: Data([1]),
+                         seedRect: reference.seedRect, isReference: true), nil))
+        XCTAssertNil(engine.trackedObservationIDForTesting())
+    }
+
+    func testRejectsNonJPEGAndExcessiveDecodedDimensionsBeforeLocalization() async throws {
+        let calls = LockedValues<Bool>()
+        let worker = VisionWorker(localizer: { _, _ in
+            calls.append(true)
+            return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
+        })
+        let pngLike = Data([0x89, 0x50, 0x4E, 0x47])
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(FrameRequest(key: testKey(), jpeg: pngLike)) }
+        let valid = try fixtureJPEG(width: 32, height: 32)
+        let infinite = ObservationKey(sessionID: testKey().sessionID, objectID: testKey().objectID,
+                                      frameID: 2, captureTime: .infinity)
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(FrameRequest(key: infinite, jpeg: valid)) }
+        let oversized = try fixtureJPEG(width: 1_921, height: 1)
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(FrameRequest(key: testKey(frame: 2), jpeg: oversized)) }
+        XCTAssertTrue(calls.values.isEmpty)
+    }
+
+    func testInvalidNewSelectionDoesNotMutateCurrentSelection() async throws {
+        let worker = VisionWorker(localizer: { request, _ in
+            LocalizationResult(rect: request.seedRect, confidence: 1, candidateID: nil,
+                               status: request.isReference ? .identityConfirmed : .notFound)
+        })
+        let jpeg = try fixtureJPEG(width: 32, height: 32)
+        let seed = [0.1, 0.1, 0.2, 0.2]
+        _ = try await worker.observe(FrameRequest(key: testKey(frame: 1, captureTime: 1), jpeg: jpeg,
+                                                  seedRect: seed, isReference: true))
+        let badNew = FrameRequest(key: testKey(object: 3, frame: 2, captureTime: 2), jpeg: Data([1]),
+                                  seedRect: seed, isReference: true)
+        await XCTAssertThrowsErrorAsync { _ = try await worker.observe(badNew) }
+        _ = try await worker.observe(FrameRequest(key: testKey(frame: 2, captureTime: 3), jpeg: jpeg))
+    }
+
 }
 
-private func testKey(frame: UInt64 = 1) -> ObservationKey {
+private func testKey(object: UInt8 = 2, frame: UInt64 = 1, captureTime: Double? = nil) -> ObservationKey {
     ObservationKey(sessionID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-                   objectID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
-                   frameID: frame, captureTime: Double(frame))
+                   objectID: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", object))!,
+                   frameID: frame, captureTime: captureTime ?? Double(frame))
+}
+
+private func fixtureJPEG(width: Int, height: Int) throws -> Data {
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    for index in stride(from: 0, to: pixels.count, by: 4) {
+        let checker = ((index / 4) % max(width, 1) + (index / 4) / max(width, 1)) % 2 == 0
+        pixels[index] = checker ? 240 : 20
+        pixels[index + 1] = checker ? 40 : 210
+        pixels[index + 2] = 90
+        pixels[index + 3] = 255
+    }
+    let data = Data(pixels)
+    let provider = try XCTUnwrap(CGDataProvider(data: data as CFData))
+    let image = try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                      bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+                                      provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    let output = NSMutableData()
+    let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.2] as CFDictionary)
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
+    return output as Data
 }
 
 private final class Gate: @unchecked Sendable {

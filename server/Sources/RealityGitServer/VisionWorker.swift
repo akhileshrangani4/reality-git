@@ -1,6 +1,8 @@
 import CoreImage
 import Foundation
+import ImageIO
 import RealityGitCore
+import UniformTypeIdentifiers
 import Vapor
 import Vision
 
@@ -28,6 +30,7 @@ actor VisionWorker {
     typealias Localizer = @Sendable (FrameRequest, FrameRequest?) throws -> LocalizationResult
 
     private final class Submission: @unchecked Sendable {
+        let id = UUID()
         let request: FrameRequest
         let generation: UInt64
         var continuation: CheckedContinuation<DetectionReply, Error>?
@@ -40,40 +43,51 @@ actor VisionWorker {
     private let localizer: Localizer
     private struct StreamKey: Hashable { let sessionID: UUID; let objectID: UUID }
     private let timeoutNanoseconds: UInt64
-    private let maxSessions: Int
+    private let validateImageMetadata: Bool
     private var active: Submission?
     private var pending: Submission?
     private var reference: FrameRequest?
     private var currentScope: StreamKey?
+    private var selectionCaptureTime: Double?
     private var generation: UInt64 = 0
-    private var latestFrames: [StreamKey: UInt64] = [:]
-    private var admittedAt: [StreamKey: ContinuousClock.Instant] = [:]
+    private var latestFrameID: UInt64?
 
-    init(timeout: Duration = .seconds(3), maxSessions: Int = 12, localizer: Localizer? = nil) {
+    init(timeout: Duration = .seconds(3), validateImageMetadata: Bool = true, localizer: Localizer? = nil) {
         let engine = VisionLocalizer()
         self.localizer = localizer ?? engine.localize
         let parts = timeout.components
         self.timeoutNanoseconds = UInt64(max(0, parts.seconds)) * 1_000_000_000
             + UInt64(max(0, parts.attoseconds / 1_000_000_000))
-        self.maxSessions = maxSessions
+        self.validateImageMetadata = validateImageMetadata
     }
 
     func observe(_ request: FrameRequest) async throws -> DetectionReply {
         try validate(request)
-        expireAdmissions()
         let stream = StreamKey(sessionID: request.key.sessionID, objectID: request.key.objectID)
-        if request.isReference, stream != currentScope {
-            generation &+= 1
-            currentScope = stream
-            reference = nil
-            if let pending { finish(pending, .failure(ObservationError.obsolete)); self.pending = nil }
+        let startsNewSelection = request.isReference && stream != currentScope
+        if startsNewSelection {
+            if let selectionCaptureTime, request.key.captureTime <= selectionCaptureTime {
+                throw ObservationError.obsolete
+            }
         } else if let currentScope, stream != currentScope {
             throw ObservationError.obsolete
         }
-        if let latest = latestFrames[stream], request.key.frameID <= latest { throw ObservationError.obsolete }
-        if latestFrames[stream] == nil && latestFrames.count >= maxSessions { throw ObservationError.sessionLimit }
-        latestFrames[stream] = request.key.frameID
-        admittedAt[stream] = .now
+        if !startsNewSelection, let latestFrameID, request.key.frameID <= latestFrameID {
+            throw ObservationError.obsolete
+        }
+
+        // The phone supplies monotonically increasing captureTime across selections.
+        // Only a reference captured after the current selection may retire it.
+        if request.isReference, stream != currentScope {
+            generation &+= 1
+            currentScope = stream
+            selectionCaptureTime = request.key.captureTime
+            latestFrameID = request.key.frameID
+            reference = nil
+            if let pending { finish(pending, .failure(ObservationError.obsolete)); self.pending = nil }
+        } else {
+            latestFrameID = request.key.frameID
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             let submission = Submission(request, generation: generation, continuation)
@@ -89,7 +103,8 @@ actor VisionWorker {
     }
 
     private func validate(_ request: FrameRequest) throws {
-        guard !request.jpeg.isEmpty, request.jpeg.count <= 4 * 1024 * 1024 else { throw ObservationError.invalidJPEG }
+        guard request.key.captureTime.isFinite, !request.jpeg.isEmpty,
+              request.jpeg.count <= 4 * 1024 * 1024 else { throw ObservationError.invalidJPEG }
         if let rect = request.seedRect {
             guard rect.count == 4, rect.allSatisfy(\.isFinite), rect.allSatisfy({ $0 >= 0 && $0 <= 1 }),
                   rect[2] > 0, rect[3] > 0, rect[0] + rect[2] <= 1, rect[1] + rect[3] <= 1 else {
@@ -97,6 +112,20 @@ actor VisionWorker {
             }
         }
         if request.isReference && request.seedRect == nil { throw ObservationError.invalidRectangle }
+        if validateImageMetadata { try validateJPEGMetadata(request.jpeg) }
+    }
+
+    private func validateJPEGMetadata(_ data: Data) throws {
+        guard data.starts(with: [0xFF, 0xD8]),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let type = CGImageSourceGetType(source), UTType(type as String) == .jpeg,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, max(width, height) <= 1_920,
+              width.multipliedReportingOverflow(by: height).overflow == false,
+              width * height <= 1_920 * 1_920 else { throw ObservationError.invalidJPEG }
     }
 
     private func launch(_ submission: Submission) {
@@ -132,15 +161,20 @@ actor VisionWorker {
 
     private func scheduleTimeout(_ submission: Submission) {
         let delay = timeoutNanoseconds
+        let id = submission.id
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
-            await self?.timeOut(submission)
+            await self?.timeOut(id: id)
         }
     }
 
-    private func timeOut(_ submission: Submission) {
-        if pending === submission { pending = nil }
-        finish(submission, .failure(ObservationError.timedOut))
+    private func timeOut(id: UUID) {
+        if let pending, pending.id == id {
+            self.pending = nil
+            finish(pending, .failure(ObservationError.timedOut))
+        } else if let active, active.id == id {
+            finish(active, .failure(ObservationError.timedOut))
+        }
     }
 
     private func finish(_ submission: Submission, _ result: Result<DetectionReply, Error>) {
@@ -151,51 +185,48 @@ actor VisionWorker {
         continuation?.resume(with: result)
     }
 
-    private func expireAdmissions() {
-        let cutoff = ContinuousClock.now - .seconds(5)
-        for (key, time) in admittedAt where time < cutoff {
-            // Expire retained payload accounting, but keep the frame high-water mark so
-            // an old frame cannot be replayed after the five-second window.
-            admittedAt.removeValue(forKey: key)
-        }
-    }
-
     func pendingFrameIDForTesting() -> UInt64? { pending?.request.key.frameID }
 }
 
-private final class VisionLocalizer: @unchecked Sendable {
+final class VisionLocalizer: @unchecked Sendable {
     private var referencePrint: VNFeaturePrintObservation?
-    private var trackedRect: CGRect?
+    private var trackedObservation: VNDetectedObjectObservation?
+    private var lastTrackingInputID: ObjectIdentifier?
     private var sequence = VNSequenceRequestHandler()
 
     func localize(_ request: FrameRequest, _ reference: FrameRequest?) throws -> LocalizationResult {
+        if reference == nil, request.isReference { reset() }
         guard let image = CIImage(data: request.jpeg) else { throw ObservationError.invalidJPEG }
         let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
 
         if reference == nil, request.isReference, let seed = request.seedRect {
-            sequence = VNSequenceRequestHandler()
             let visionRect = CGRect(x: seed[0], y: 1 - seed[1] - seed[3], width: seed[2], height: seed[3])
-            trackedRect = visionRect
-            referencePrint = try featurePrint(image.cropped(to: pixelRect(visionRect, image.extent)))
+            let newPrint = try featurePrint(image.cropped(to: pixelRect(visionRect, image.extent)))
             let initialize = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: visionRect))
+            initialize.trackingLevel = .accurate
             try sequence.perform([initialize], on: image, orientation: .up)
+            guard let initialized = initialize.results?.first as? VNDetectedObjectObservation else {
+                throw ObservationError.invalidJPEG
+            }
+            referencePrint = newPrint
+            trackedObservation = initialized
             return LocalizationResult(rect: seed, confidence: 1, candidateID: nil, status: .identityConfirmed)
         }
 
-        if let visionRect = trackedRect {
-            let observation = VNDetectedObjectObservation(boundingBox: visionRect)
-            let tracking = VNTrackObjectRequest(detectedObjectObservation: observation)
+        if let trackedObservation {
+            lastTrackingInputID = ObjectIdentifier(trackedObservation)
+            let tracking = VNTrackObjectRequest(detectedObjectObservation: trackedObservation)
             tracking.trackingLevel = .accurate
             try sequence.perform([tracking], on: image, orientation: .up)
             if let result = tracking.results?.first as? VNDetectedObjectObservation, !tracking.isLastFrame,
                result.confidence >= 0.35 {
                 let rect = result.boundingBox
-                trackedRect = rect
+                self.trackedObservation = result
                 return LocalizationResult(rect: [rect.minX, 1 - rect.maxY, rect.width, rect.height],
                                           confidence: Double(result.confidence), candidateID: nil,
                                           status: .tracked)
             }
-            trackedRect = nil
+            self.trackedObservation = nil
         }
 
         guard let referencePrint else {
@@ -220,6 +251,19 @@ private final class VisionLocalizer: @unchecked Sendable {
         }
         return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
     }
+
+    private func reset() {
+        referencePrint = nil
+        trackedObservation = nil
+        sequence = VNSequenceRequestHandler()
+        lastTrackingInputID = nil
+    }
+
+    func trackedObservationIDForTesting() -> ObjectIdentifier? {
+        trackedObservation.map(ObjectIdentifier.init)
+    }
+
+    func lastTrackingInputIDForTesting() -> ObjectIdentifier? { lastTrackingInputID }
 
     private func featurePrint(_ image: CIImage) throws -> VNFeaturePrintObservation {
         let request = VNGenerateImageFeaturePrintRequest()

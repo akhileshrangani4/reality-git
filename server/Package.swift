@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "RealityGitServer", targets: ["RealityGitServer"])],
     dependencies: [
         .package(path: "../Packages/RealityGitCore"),
-        .package(url: "https://github.com/vapor/vapor.git", exact: "4.121.4")
+        .package(url: "https://github.com/vapor/vapor.git", exact: "4.122.1")
     ],
     targets: [
         .executableTarget(name: "RealityGitServer", dependencies: [
