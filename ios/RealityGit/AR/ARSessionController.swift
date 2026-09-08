@@ -355,8 +355,9 @@ final class ARSessionController: NSObject, ObservableObject {
         let generation = trackingGeneration
         let recovery = assistant.recoveryEvidence()
         let key = objectSession.key(for: sample)
+        let referencePosition = objectSession.reference?.position
         Task {
-            let result = await tracker.process(sample, selection: selection, generation: generation, recovery: recovery)
+            let result = await tracker.process(sample, selection: selection, generation: generation, recovery: recovery, key: key, referencePosition: referencePosition)
             workerBusy = false
             #if DEBUG
             let shouldLogInference = result.message != lastInferenceMessage || sample.timestamp - lastInferenceDiagnosticTime >= 1

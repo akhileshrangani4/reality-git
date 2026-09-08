@@ -175,6 +175,27 @@ final class CapturedReferenceTests: XCTestCase {
         XCTAssertFalse(CurrentScreenOverlay.isVisible(state: diff.state, freshLocalTrack: true, confidence: 0.9, hasCurrentWorldPosition: true, arReliable: true, drawing: false))
         XCTAssertFalse(DiffState.unchanged.showsCurrentOverlay)
     }
+    func testDebugSerializationBoundsConstructionInputsAndPreservesExactAssociation() throws {
+        let points: [SIMD3<Float>] = (0..<9000).map { SIMD3(Float($0 % 100) * 0.01, Float($0 / 100) * 0.01, -1) }
+        let colors = Array(repeating: SIMD3<Float>(0.1, 0.2, 0.8), count: points.count)
+        let support = points.map { SIMD2($0.x, $0.y) }
+        let baseline = try XCTUnwrap(DepthComponentSignature(points: points, colors: colors, support: support))
+        let candidate = try XCTUnwrap(DepthComponentSignature(points: points.map { SIMD3($0.x * 2, $0.y, $0.z) }, colors: colors, support: support))
+        let inputs = DepthDebugInputs(points: points, colors: colors, support: support, signature: baseline)
+        let data = try JSONEncoder().encode(inputs)
+        let decoded = try JSONDecoder().decode(DepthDebugInputs.self, from: data)
+        XCTAssertEqual(decoded.originalCount, 9000)
+        XCTAssertEqual(decoded.points.count, 512)
+        XCTAssertEqual(decoded.colors.count, 512)
+        XCTAssertEqual(decoded.support.count, 512)
+        XCTAssertLessThan(data.count, 200_000)
+        let restored = try XCTUnwrap(decoded.signature)
+        XCTAssertEqual(restored.comparisonValues(candidate), baseline.comparisonValues(candidate))
+        XCTAssertEqual(restored.rejectionReason(candidate, confidence: 0.9), "metric size")
+        XCTAssertEqual(restored.accepts(candidate, confidence: 0.9), baseline.accepts(candidate, confidence: 0.9))
+        let empty = DepthDebugInputs(points: [], colors: [], support: [], signature: nil)
+        XCTAssertTrue(empty.points.isEmpty)
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)

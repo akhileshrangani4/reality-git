@@ -80,7 +80,7 @@ public enum ForegroundDepth {
 
 /// Association checks for a freshly separated component. Unlike propagated
 /// support, this evidence can move in depth, but must retain object appearance.
-public struct DepthComponentSignature: Sendable {
+public struct DepthComponentSignature: Codable, Sendable {
     public static func normalizedSupport(imagePoints: [SIMD2<Float>], trackingRect: CGRect) -> [SIMD2<Float>] {
         guard trackingRect.width > 0, trackingRect.height > 0 else { return [] }
         return imagePoints.map { SIMD2(($0.x - Float(trackingRect.minX)) / Float(trackingRect.width), ($0.y - Float(trackingRect.minY)) / Float(trackingRect.height)) }
@@ -98,6 +98,15 @@ public struct DepthComponentSignature: Sendable {
         cells = Set(support.filter { $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.x <= 1 && $0.y >= 0 && $0.y <= 1 }.map { min(7, Int($0.y * 8)) * 8 + min(7, Int($0.x * 8)) })
         guard size.x > 0.005, size.y > 0.005, [size.x, size.y, color.x, color.y, color.z].allSatisfy(\.isFinite), !cells.isEmpty else { return nil }
     }
+    public func comparisonValues(_ candidate: DepthComponentSignature) -> [String: Float] {
+        let overlap = Float(cells.intersection(candidate.cells).count)
+        return ["baselineWidth": size.x, "baselineHeight": size.y,
+                "candidateWidth": candidate.size.x, "candidateHeight": candidate.size.y,
+                "widthRatio": candidate.size.x / size.x, "heightRatio": candidate.size.y / size.y,
+                "colorDistance": simd_distance(color, candidate.color),
+                "baselineSupportOverlap": overlap / Float(cells.count),
+                "candidateSupportOverlap": overlap / Float(candidate.cells.count)]
+    }
     public func accepts(_ candidate: DepthComponentSignature, confidence: Float) -> Bool {
         rejectionReason(candidate, confidence: confidence) == nil
     }
@@ -109,5 +118,24 @@ public struct DepthComponentSignature: Sendable {
         let intersection = cells.intersection(candidate.cells).count
         guard intersection * 10 >= cells.count * 7 && intersection * 10 >= candidate.cells.count * 7 else { return "support shape" }
         return nil
+    }
+}
+
+/// Bounded diagnostic inputs; the exact serialized signature permits lossless
+/// association replay even when construction points have been sampled.
+public struct DepthDebugInputs: Codable, Sendable {
+    public let signature: DepthComponentSignature?
+    public let originalCount: Int
+    public let points: [SIMD3<Float>]
+    public let colors: [SIMD3<Float>]
+    public let support: [SIMD2<Float>]
+    public init(points: [SIMD3<Float>], colors: [SIMD3<Float>], support: [SIMD2<Float>], signature: DepthComponentSignature?) {
+        self.signature = signature
+        originalCount = points.count
+        let count = min(points.count, colors.count, support.count)
+        let indices = (0..<min(512, count)).map { $0 * count / min(512, count) }
+        self.points = indices.map { points[$0] }
+        self.colors = indices.map { colors[$0] }
+        self.support = indices.map { support[$0] }
     }
 }

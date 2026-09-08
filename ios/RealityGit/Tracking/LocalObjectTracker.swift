@@ -41,9 +41,18 @@ actor LocalObjectTracker {
     private var supportTime: Double = -.infinity
     private var activeSelection: ObjectSelection?
     private var activeSample: FrameSample?
+    #if DEBUG
+    private let geometryRecorder = GeometryDebugRecorder()
+    private var debugKey: ObservationKey?
+    private var debugReferencePosition: SIMD3<Float>?
+    #endif
     private var currentSampleTime: Double = 0
 
-    func process(_ sample: FrameSample, selection: ObjectSelection?, generation: UUID, recovery: MacTrackingRecovery? = nil) -> LocalTrackingResult {
+    func process(_ sample: FrameSample, selection: ObjectSelection?, generation: UUID, recovery: MacTrackingRecovery? = nil, key: ObservationKey? = nil, referencePosition: SIMD3<Float>? = nil) -> LocalTrackingResult {
+        #if DEBUG
+        debugKey = key; debugReferencePosition = referencePosition
+        geometryRecorder.begin(sessionID: key?.sessionID)
+        #endif
         activeSelection = selection
         activeSample = sample
         currentSampleTime = sample.timestamp
@@ -52,6 +61,9 @@ actor LocalObjectTracker {
             support = []
             lastSupportedWorld = nil
             componentSignature = nil
+            #if DEBUG
+            geometryRecorder.baseline = nil
+            #endif
             if case .rectangle = selection { explicitDepthSelection = true } else { explicitDepthSelection = false }
             sequence = VNSequenceRequestHandler()
             self.generation = generation
@@ -264,6 +276,10 @@ actor LocalObjectTracker {
         supportTime = sample.timestamp
         let colors = sample.colors(at: pixels)
         componentSignature = DepthComponentSignature(points: points, colors: colors, support: support.map { SIMD2($0.0, $0.1) })
+        #if DEBUG
+        geometryRecorder.baseline = GeometryDebugCapture(source: "RGB mask", key: debugKey, sample: sample, trackedRect: predicted, extractionRect: rect,
+            inputs: DepthDebugInputs(points: points, colors: colors, support: support.map { SIMD2($0.0, $0.1) }, signature: componentSignature))
+        #endif
         let world = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
         lastSupportedWorld = SIMD3(world.x, world.y, world.z)
         let worldPoints = points.map { point in
@@ -332,7 +348,13 @@ actor LocalObjectTracker {
                 let w = sample.cameraToWorld * SIMD4(center.x, center.y, center.z, 1)
                 let position = SIMD3(w.x,w.y,w.z)
                 lastSupportedWorld = position
-                if componentSignature == nil { componentSignature = signature }
+                if componentSignature == nil {
+                    componentSignature = signature
+                    #if DEBUG
+                    geometryRecorder.baseline = GeometryDebugCapture(source: "depth component", key: debugKey, sample: sample, trackedRect: predicted, extractionRect: rect,
+                        inputs: DepthDebugInputs(points: cameraPoints, colors: colors, support: currentSupport, signature: signature))
+                    #endif
+                }
                 geometryDiagnostic("associated current component accepted points=\(cameraPoints.count) confidence=\(confidence)")
                 let worldPoints = cameraPoints.map { p in
                     let w = sample.cameraToWorld * SIMD4(p.x,p.y,p.z,1)
@@ -345,7 +367,13 @@ actor LocalObjectTracker {
                 return LocalTrackingResult(rect: predicted ?? rect, worldPosition: position, confidence: confidence, message: "Remembered depth shape", referenceRect: rect, worldBounds: simd_max(high-low,SIMD3(repeating:0.03)), capturedPoints: zip(worldPoints,colors).map { CapturedPoint(position:$0.0-position,color:$0.1) })
             } else {
                 let rejection = signature.flatMap { candidate in componentSignature?.rejectionReason(candidate, confidence: confidence) } ?? "missing coherent depth/background proof"
-                geometryDiagnostic("component rejected: \(rejection) points=\(cameraPoints.count) confidence=\(confidence)")
+                let comparison = signature.flatMap { candidate in componentSignature?.comparisonValues(candidate) } ?? [:]
+                geometryDiagnostic("component rejected: \(rejection) points=\(cameraPoints.count) confidence=\(confidence) values=\(comparison)")
+                #if DEBUG
+                geometryRecorder.record(candidate: GeometryDebugCapture(source: "depth component", key: debugKey, sample: sample, trackedRect: predicted, extractionRect: rect,
+                    inputs: DepthDebugInputs(points: cameraPoints, colors: colors, support: currentSupport, signature: signature)),
+                    reason: rejection, confidence: confidence, referencePosition: debugReferencePosition)
+                #endif
             }
         }
         if let predicted, confidence >= 0.8, let sample = activeSample, sample.timestamp - supportTime <= 1.5, support.count >= 12 {
