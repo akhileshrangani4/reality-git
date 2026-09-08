@@ -9,6 +9,7 @@ import QuartzCore
 final class AssistantCoordinator: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var message = "Mac assistance off"
+    @Published private(set) var semanticMessage: String?
     var samplesPerSecond: Double = 2
     var longEdge: Int = 640
     private var client: AssistantClient?
@@ -88,6 +89,7 @@ final class AssistantCoordinator: ObservableObject {
         if connected { message = "Mac connected · select an object" }
     }
     private func cancelPending() {
+        semanticMessage = nil
         worker.invalidate()
         frames.reset(); evidence = nil
     }
@@ -124,6 +126,12 @@ final class AssistantCoordinator: ObservableObject {
                 connection.acknowledgeReference()
             }
             evidence = (reply, source.frame)
+            switch reply.semanticStatus {
+            case "ready": semanticMessage = reply.semanticLabel.map { "Astra · \($0)" }
+            case "labeling": semanticMessage = "Astra · labeling selected object"
+            case "unavailable": semanticMessage = "Astra · label unavailable"
+            default: semanticMessage = nil
+            }
             switch reply.status {
             case .tracked: message = "Mac tracking active"
             case .candidate: message = "Mac candidate · identity unconfirmed"

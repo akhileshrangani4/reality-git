@@ -37,13 +37,17 @@ public struct DetectionReply: Codable, Equatable, Sendable {
     public let confidence: Double
     public let candidateID: String?
     public let status: DetectionStatus
+    public let semanticLabel: String?
+    public let semanticStatus: String?
 
     public init(key: ObservationKey, rect: [Double]?, confidence: Double,
-                candidateID: String?, status: DetectionStatus) {
+                candidateID: String?, status: DetectionStatus, semanticLabel: String? = nil, semanticStatus: String? = nil) {
         self.key = key
         self.rect = rect
         self.confidence = confidence
         self.candidateID = candidateID
         self.status = status
+        self.semanticLabel = semanticLabel
+        self.semanticStatus = semanticStatus
     }
 }

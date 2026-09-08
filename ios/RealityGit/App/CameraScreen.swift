@@ -184,6 +184,9 @@ private struct AssistantControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(assistant.message).font(.caption).foregroundStyle(.secondary)
+            if let semanticMessage = assistant.semanticMessage {
+                Text(semanticMessage).font(.caption).foregroundStyle(.secondary)
+            }
             Button("Mac assistance", systemImage: "laptopcomputer") { showsConnection = true }
                 .font(.subheadline)
         }

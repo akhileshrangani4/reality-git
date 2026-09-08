@@ -10,3 +10,13 @@ import Testing
     #expect(decoded == request)
     #expect(decoded.key == key)
 }
+
+@Test func legacyDetectionReplyDecodesWithoutSemanticMetadata() throws {
+    let key = ObservationKey(sessionID: UUID(), objectID: UUID(), frameID: 1, captureTime: 1)
+    let reply = DetectionReply(key: key, rect: nil, confidence: 0, candidateID: nil, status: .notFound)
+    let encoded = try JSONEncoder().encode(reply)
+    let decoded = try JSONDecoder().decode(DetectionReply.self, from: encoded)
+    #expect(decoded.semanticLabel == nil)
+    #expect(decoded.semanticStatus == nil)
+    #expect(decoded == reply)
+}

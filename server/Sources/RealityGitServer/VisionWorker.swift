@@ -40,6 +40,11 @@ actor VisionWorker {
         }
     }
 
+    private let semanticProvider: AstraLabeler.Provider
+    private var semanticActive = false
+    private var semanticPending: FrameRequest?
+    private var semanticLabel: String?
+    private var semanticStatus: String?
     private let localizer: Localizer
     private struct StreamKey: Hashable { let sessionID: UUID; let objectID: UUID }
     private let timeoutNanoseconds: UInt64
@@ -52,7 +57,8 @@ actor VisionWorker {
     private var generation: UInt64 = 0
     private var latestFrameID: UInt64?
 
-    init(timeout: Duration = .seconds(3), validateImageMetadata: Bool = true, localizer: Localizer? = nil) {
+    init(timeout: Duration = .seconds(3), validateImageMetadata: Bool = true, localizer: Localizer? = nil, semanticProvider: @escaping AstraLabeler.Provider = AstraLabeler.label) {
+        self.semanticProvider = semanticProvider
         let engine = VisionLocalizer()
         self.localizer = localizer ?? engine.localize
         let parts = timeout.components
@@ -84,6 +90,9 @@ actor VisionWorker {
             selectionCaptureTime = request.key.captureTime
             latestFrameID = request.key.frameID
             reference = nil
+            semanticLabel = nil
+            semanticStatus = nil
+            semanticPending = nil
             if let pending { finish(pending, .failure(ObservationError.obsolete)); self.pending = nil }
         } else {
             latestFrameID = request.key.frameID
@@ -154,15 +163,44 @@ actor VisionWorker {
         }
         if reference == nil, submission.request.isReference, case .success = result {
             reference = submission.request
+            semanticStatus = "labeling"
+            semanticPending = submission.request
+            launchSemanticIfIdle()
         }
         finish(submission, result.map { result in
             DetectionReply(key: submission.request.key, rect: result.rect, confidence: result.confidence,
-                           candidateID: result.candidateID, status: result.status)
+                           candidateID: result.candidateID, status: result.status,
+                           semanticLabel: semanticLabel, semanticStatus: semanticStatus)
         })
         if active === submission {
             active = pending; pending = nil
             if let active { launch(active) }
         }
+    }
+
+    private func launchSemanticIfIdle() {
+        guard !semanticActive, let request = semanticPending else { return }
+        semanticActive = true
+        semanticPending = nil
+        let scopeGeneration = generation
+        let provider = semanticProvider
+        Task.detached(priority: .utility) {
+            let result: Result<String, Error>
+            do { result = .success(try await provider(request)) }
+            catch { result = .failure(error) }
+            await self.semanticFinished(result, generation: scopeGeneration)
+        }
+    }
+
+    private func semanticFinished(_ result: Result<String, Error>, generation: UInt64) {
+        semanticActive = false
+        if generation == self.generation {
+            switch result {
+            case .success(let label): semanticLabel = label; semanticStatus = "ready"
+            case .failure: semanticLabel = nil; semanticStatus = "unavailable"
+            }
+        }
+        launchSemanticIfIdle()
     }
 
     private func scheduleTimeout(_ submission: Submission) {
