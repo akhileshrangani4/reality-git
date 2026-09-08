@@ -1,6 +1,6 @@
 # Astra integration grounding
 
-Verified September 8, 2026 against official OpenAI documentation. Live text access is verified; image-label integration is in progress.
+Verified September 8, 2026 against official OpenAI documentation. Live text access and the image-label integration are implemented; candidate comparison is implemented, reviewed and running on the Mac; live reacquisition accuracy remains pending.
 
 ## Verified provider contract
 
@@ -10,7 +10,7 @@ Verified September 8, 2026 against official OpenAI documentation. Live text acce
 
 ## Application contract to implement
 
-A server-only adapter compares the saved reference crop with a tentative candidate crop. It returns same/different/uncertain, semantic label and confidence. The server attaches the exact session/object/candidate/source IDs from the request context. Stale decisions cannot authorize newer candidates or move a current overlay.
+The server labels the selected reference crop asynchronously and returns an optional label to the phone. The user reports receiving a label, but tracking remained lost; labeling alone did not solve reacquisition. Candidate comparison is now implemented separately: immutable reference crop versus a continuously tracked candidate, returning same/different/uncertain plus confidence. Authorization requires the same selection and continuous candidate ID, then a successful current-frame Vision advance; a model answer never supplies geometry.
 
 One request at a time; initially no more often than every five seconds, with a coalesced uncertainty trigger. Respect account-specific limits and retry-after responses. Local Vision, Mac Vision and rendering must continue during failure or delay. Actual account limits and round-trip latency have not been measured.
 

@@ -68,3 +68,10 @@ A successful compile does not establish real-world geometry or visual correctnes
 - Immutable reference, ordered masked positions, and red/green world-space boxes implemented. Independent review passed the bounded movement/restoration scope; 26 core XCTest tests plus wire test passed, signed build/install passed. Automatic launch was blocked because the phone was locked; user asked to unlock and open the installed build.
 - Move threshold 15 cm; restore within 8 cm; three distinct observations spanning at least 0.5 seconds. Green expires after 0.5 seconds without reliable geometry, red persists after a confirmed move, and AR uncertainty hides both.
 - User test: neither overlay appeared. Subsequent screenshot shows Reference saved / current position uncertain and Mac candidate / identity unconfirmed. No move was confirmed in this observation. User asked to retry slow in-frame movement; this remains a failed/incomplete physical movement check, not a rendering pass. Removal detection and Gaussian appearance are not implemented by this increment.
+
+## Selection and semantic handoff correction
+
+- User reports labeling succeeds but tracking continues searching. This is not a successful end-to-end pass.
+- Server e416dbc adds a stable continuously tracked candidate ID, bounded Astra reference/candidate comparison, and promotion only after a successful current-frame Vision advance. 23 server tests and independent review pass.
+- Phone 4a28e1d starts an explicit drawn selection before segmentation and sends that exact user crop to the Mac. It still requires genuine mask/depth before saving metric reference. Address persistence remains explicit-Connect; OpenAI forwarding is disclosed. 28 core XCTest plus 2 wire tests, independent review, signed build/install/launch pass.
+- Updated server restarted with the user's environment key, health passes. Live reacquisition and visible move/restore remain pending; no robustness claim yet.
