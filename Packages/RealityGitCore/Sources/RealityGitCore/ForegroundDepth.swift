@@ -2,14 +2,15 @@ import Foundation
 import simd
 
 /// A conservative fallback for a tight explicit selection. A separated foreground
-/// component is required; a flat desk or wall is never accepted as the object.
+/// component is required for capture. Known-object proposals may omit background
+/// separation only when the caller subsequently validates the existing signature.
 public enum ForegroundDepth {
     public static func allowsFallback(measuredDepth: Float, supportedWorld: SIMD3<Float>, cameraToWorld: simd_float4x4) -> Bool {
         let p = cameraToWorld.inverse * SIMD4(supportedWorld.x, supportedWorld.y, supportedWorld.z, 1)
         return measuredDepth.isFinite && p.z < -0.1 && abs(measuredDepth + p.z) <= 0.05
     }
 
-    public static func indices(depth: [Float], confidence: [UInt8], width: Int, height: Int, rect: CGRect) -> [Int] {
+    public static func indices(depth: [Float], confidence: [UInt8], width: Int, height: Int, rect: CGRect, requireSeparatedBackground: Bool = true) -> [Int] {
         guard width > 0, height > 0, depth.count == width * height, confidence.count == depth.count,
               [rect.minX, rect.minY, rect.maxX, rect.maxY].allSatisfy(\.isFinite), rect.width > 0, rect.height > 0 else { return [] }
         let left = max(0, Int(rect.minX * Double(width))), right = min(width - 1, Int(rect.maxX * Double(width)))
@@ -44,20 +45,23 @@ public enum ForegroundDepth {
                 if u > 0.25 && u < 0.75 && v > 0.25 && v < 0.75 { center.append(i) }
             }
         }
-        guard ring.count >= 12, center.count >= 12 else { return [] }
+        guard center.count >= 12 else { return [] }
         ring.sort(); center.sort { depth[$0] < depth[$1] }
         let seed = center[center.count / 5], foreground = depth[seed]
-        // At least 75% of the external ring must be behind the seed, preventing a
-        // component cut out of the support plane from becoming a reference.
-        guard ring[ring.count / 4] - foreground > 0.07 else { return [] }
-        // Perspective depth of a plane has affine inverse depth. A one-sided
-        // corner ring can be farther solely because the support plane slopes;
-        // require separation from its extrapolated depth at the actual seed too.
-        guard abs(simd_determinant(normal)) > 0.00001 else { return [] }
-        let plane = normal.inverse * target
-        let inverseDepth = simd_dot(plane, coordinate(seed % width, seed / width))
-        guard inverseDepth.isFinite, inverseDepth > 0,
-              1 / inverseDepth - foreground > 0.07 else { return [] }
+        if requireSeparatedBackground {
+            guard ring.count >= 12 else { return [] }
+            // At least 75% of the external ring must be behind the seed, preventing a
+            // component cut out of the support plane from becoming a reference.
+            guard ring[ring.count / 4] - foreground > 0.07 else { return [] }
+            // Perspective depth of a plane has affine inverse depth. A one-sided
+            // corner ring can be farther solely because the support plane slopes;
+            // require separation from its extrapolated depth at the actual seed too.
+            guard abs(simd_determinant(normal)) > 0.00001 else { return [] }
+            let plane = normal.inverse * target
+            let inverseDepth = simd_dot(plane, coordinate(seed % width, seed / width))
+            guard inverseDepth.isFinite, inverseDepth > 0,
+                  1 / inverseDepth - foreground > 0.07 else { return [] }
+        }
         var queue = [seed], seen: Set<Int> = [seed], cursor = 0
         while cursor < queue.count {
             let i = queue[cursor]; cursor += 1
@@ -95,11 +99,15 @@ public struct DepthComponentSignature: Sendable {
         guard size.x > 0.005, size.y > 0.005, [size.x, size.y, color.x, color.y, color.z].allSatisfy(\.isFinite), !cells.isEmpty else { return nil }
     }
     public func accepts(_ candidate: DepthComponentSignature, confidence: Float) -> Bool {
-        guard confidence >= 0.8, confidence.isFinite,
-              candidate.size.x / size.x >= 0.7, candidate.size.x / size.x <= 1.3,
-              candidate.size.y / size.y >= 0.7, candidate.size.y / size.y <= 1.3,
-              simd_distance(color, candidate.color) <= 0.25 else { return false }
+        rejectionReason(candidate, confidence: confidence) == nil
+    }
+    public func rejectionReason(_ candidate: DepthComponentSignature, confidence: Float) -> String? {
+        guard confidence >= 0.8, confidence.isFinite else { return "tracking confidence" }
+        guard candidate.size.x / size.x >= 0.7, candidate.size.x / size.x <= 1.3,
+              candidate.size.y / size.y >= 0.7, candidate.size.y / size.y <= 1.3 else { return "metric size" }
+        guard simd_distance(color, candidate.color) <= 0.25 else { return "color" }
         let intersection = cells.intersection(candidate.cells).count
-        return intersection * 10 >= cells.count * 7 && intersection * 10 >= candidate.cells.count * 7
+        guard intersection * 10 >= cells.count * 7 && intersection * 10 >= candidate.cells.count * 7 else { return "support shape" }
+        return nil
     }
 }

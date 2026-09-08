@@ -314,7 +314,7 @@ actor LocalObjectTracker {
         if case .rectangle(let rect) = activeSelection { depthRegion = predicted == nil ? nil : rect }
         else { depthRegion = (explicitDepthSelection || !support.isEmpty) && confidence >= 0.8 ? predicted : nil }
         if let sample = activeSample, let rect = depthRegion {
-            let indices = ForegroundDepth.indices(depth: sample.depth, confidence: sample.confidence, width: sample.depthWidth, height: sample.depthHeight, rect: rect)
+            let indices = ForegroundDepth.indices(depth: sample.depth, confidence: sample.confidence, width: sample.depthWidth, height: sample.depthHeight, rect: rect, requireSeparatedBackground: componentSignature == nil)
             var cameraPoints: [SIMD3<Float>] = []
             var pixels: [(Int, Int)] = []
             for i in indices {
@@ -333,7 +333,7 @@ actor LocalObjectTracker {
                 let position = SIMD3(w.x,w.y,w.z)
                 lastSupportedWorld = position
                 if componentSignature == nil { componentSignature = signature }
-                geometryDiagnostic("fresh separated component accepted points=\(cameraPoints.count) confidence=\(confidence)")
+                geometryDiagnostic("associated current component accepted points=\(cameraPoints.count) confidence=\(confidence)")
                 let worldPoints = cameraPoints.map { p in
                     let w = sample.cameraToWorld * SIMD4(p.x,p.y,p.z,1)
                     return SIMD3(w.x,w.y,w.z)
@@ -344,7 +344,8 @@ actor LocalObjectTracker {
                 for p in worldPoints { low = simd_min(low,p); high = simd_max(high,p) }
                 return LocalTrackingResult(rect: predicted ?? rect, worldPosition: position, confidence: confidence, message: "Remembered depth shape", referenceRect: rect, worldBounds: simd_max(high-low,SIMD3(repeating:0.03)), capturedPoints: zip(worldPoints,colors).map { CapturedPoint(position:$0.0-position,color:$0.1) })
             } else {
-                geometryDiagnostic(cameraPoints.count < 12 ? "separated component missing/rejected background" : "component association rejected size/color/support confidence=\(confidence)")
+                let rejection = signature.flatMap { candidate in componentSignature?.rejectionReason(candidate, confidence: confidence) } ?? "missing coherent depth/background proof"
+                geometryDiagnostic("component rejected: \(rejection) points=\(cameraPoints.count) confidence=\(confidence)")
             }
         }
         if let predicted, confidence >= 0.8, let sample = activeSample, sample.timestamp - supportTime <= 1.5, support.count >= 12 {

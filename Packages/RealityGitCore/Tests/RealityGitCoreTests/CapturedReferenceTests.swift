@@ -131,6 +131,27 @@ final class CapturedReferenceTests: XCTestCase {
         let mismatched = try XCTUnwrap(DepthComponentSignature(points: points, colors: colors, support: DepthComponentSignature.normalizedSupport(imagePoints: imagePoints, trackingRect: maskRect)))
         XCTAssertFalse(mismatched.accepts(moved, confidence: 0.9), "This fixture reproduces the former mixed-coordinate rejection")
     }
+    func testKnownObjectProposalDoesNotRequireExposedBackgroundBoundary() throws {
+        let rect = CGRect(x: 0.3, y: 0.3, width: 0.375, height: 0.375)
+        let depth = Array(repeating: Float(0.8), count: 1600)
+        let confidence = Array(repeating: UInt8(2), count: 1600)
+        XCTAssertTrue(ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect).isEmpty, "Initial capture still needs background separation")
+        let indices = ForegroundDepth.indices(depth: depth, confidence: confidence, width: 40, height: 40, rect: rect, requireSeparatedBackground: false)
+        XCTAssertEqual(indices.count, 256)
+        let imagePoints = indices.map { SIMD2((Float($0 % 40) + 0.5) / 40, (Float($0 / 40) + 0.5) / 40) }
+        let support = DepthComponentSignature.normalizedSupport(imagePoints: imagePoints, trackingRect: rect)
+        let initialPoints = imagePoints.map { SIMD3($0.x, $0.y, Float(-1.1)) }
+        let movedPoints = initialPoints.map { $0 + SIMD3(0,0,0.3) }
+        let blue = Array(repeating: SIMD3<Float>(0.1,0.3,0.8), count: indices.count)
+        let known = try XCTUnwrap(DepthComponentSignature(points: initialPoints, colors: blue, support: support))
+        let moved = try XCTUnwrap(DepthComponentSignature(points: movedPoints, colors: blue, support: support))
+        XCTAssertTrue(known.accepts(moved, confidence: 0.85))
+        for color in [SIMD3<Float>(0.7,0.6,0.5), SIMD3<Float>(0.8,0.4,0.3)] {
+            let distractor = try XCTUnwrap(DepthComponentSignature(points: movedPoints, colors: Array(repeating: color, count: indices.count), support: support))
+            XCTAssertFalse(known.accepts(distractor, confidence: 0.9))
+            XCTAssertEqual(known.rejectionReason(distractor, confidence: 0.9), "color")
+        }
+    }
     func testForegroundRequiresSeparatedDepthComponent() {
         var depth = Array(repeating: Float(1), count: 1600)
         let confidence = Array(repeating: UInt8(2), count: 1600)
