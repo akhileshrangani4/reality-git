@@ -150,6 +150,27 @@ final class RouteTests: XCTestCase {
         _ = try await worker.observe(FrameRequest(key: testKey(object: 3, frame: 3, captureTime: 3), jpeg: Data([1])))
     }
 
+    func testCandidateVisionContinuityPromotionAndGapRetirement() throws {
+        let jpeg = try candidateFixtureJPEG()
+        let engine = VisionLocalizer()
+        let reference = FrameRequest(key: testKey(frame: 1, captureTime: 1), jpeg: jpeg, seedRect: [0.2, 0.2, 0.4, 0.4], isReference: true)
+        _ = try engine.localize(reference, nil)
+        let proposal = try engine.initializeCandidateForTesting(reference, rect: CGRect(x: 0.2, y: 0.4, width: 0.4, height: 0.4))
+        let id = try XCTUnwrap(proposal.candidateID)
+        let unconfirmed = try engine.localize(FrameRequest(key: testKey(frame: 2, captureTime: 1.2), jpeg: jpeg), reference, authorizedCandidateID: "wrong")
+        XCTAssertEqual(unconfirmed.status, .candidate)
+        XCTAssertEqual(unconfirmed.candidateID, id)
+        let promoted = try engine.localize(FrameRequest(key: testKey(frame: 3, captureTime: 1.4), jpeg: jpeg), reference, authorizedCandidateID: id)
+        XCTAssertEqual(promoted.status, .tracked)
+        XCTAssertNil(promoted.candidateID)
+        XCTAssertNotNil(engine.trackedObservationIDForTesting())
+        let second = try engine.initializeCandidateForTesting(reference, rect: CGRect(x: 0.2, y: 0.4, width: 0.4, height: 0.4))
+        let expiredID = try XCTUnwrap(second.candidateID)
+        let expired = try engine.localize(FrameRequest(key: testKey(frame: 4, captureTime: 2.01), jpeg: jpeg), reference, authorizedCandidateID: expiredID)
+        XCTAssertNotEqual(expired.status, .tracked)
+        XCTAssertNotEqual(expired.candidateID, expiredID)
+    }
+
     func testProductionJPEGValidationAndVisionSequence() throws {
         let jpeg = try fixtureJPEG(width: 64, height: 64)
         let engine = VisionLocalizer()
@@ -258,6 +279,29 @@ private func fixtureJPEG(width: Int, height: Int) throws -> Data {
     let output = NSMutableData()
     let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil))
     CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.2] as CFDictionary)
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
+    return output as Data
+}
+
+private func candidateFixtureJPEG() throws -> Data {
+    let width = 256, height = 256
+    var pixels = [UInt8](repeating: 255, count: width * height * 4)
+    for y in 0..<height {
+        for x in 0..<width {
+            let offset = (y * width + x) * 4
+            let value = ((x / 8) * 73 ^ (y / 8) * 137) % 230
+            pixels[offset] = UInt8(value)
+            pixels[offset + 1] = UInt8((value * 3 + 40) % 255)
+            pixels[offset + 2] = UInt8((value * 7 + 70) % 255)
+        }
+    }
+    let provider = try XCTUnwrap(CGDataProvider(data: Data(pixels) as CFData))
+    let image = try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+        bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    let output = NSMutableData()
+    let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
     XCTAssertTrue(CGImageDestinationFinalize(destination))
     return output as Data
 }

@@ -45,7 +45,15 @@ actor VisionWorker {
     private var semanticPending: FrameRequest?
     private var semanticLabel: String?
     private var semanticStatus: String?
-    private let localizer: Localizer
+    typealias AuthorizedLocalizer = @Sendable (FrameRequest, FrameRequest?, String?) throws -> LocalizationResult
+    private let comparator: AstraLabeler.Comparator
+    private let now: @Sendable () -> Double
+    private var candidateID: String?
+    private var authorizedCandidateID: String?
+    private var comparisonPending: FrameRequest?
+    private var comparedCandidateID: String?
+    private var lastComparisonTime = -Double.infinity
+    private let localizer: AuthorizedLocalizer
     private struct StreamKey: Hashable { let sessionID: UUID; let objectID: UUID }
     private let timeoutNanoseconds: UInt64
     private let validateImageMetadata: Bool
@@ -57,10 +65,17 @@ actor VisionWorker {
     private var generation: UInt64 = 0
     private var latestFrameID: UInt64?
 
-    init(timeout: Duration = .seconds(3), validateImageMetadata: Bool = true, localizer: Localizer? = nil, semanticProvider: @escaping AstraLabeler.Provider = AstraLabeler.label) {
+    init(timeout: Duration = .seconds(3), validateImageMetadata: Bool = true, localizer: Localizer? = nil, semanticProvider: @escaping AstraLabeler.Provider = AstraLabeler.label,
+         comparator: @escaping AstraLabeler.Comparator = AstraLabeler.compare,
+         authorizedLocalizer: AuthorizedLocalizer? = nil,
+         now: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }) {
+        self.comparator = comparator
+        self.now = now
         self.semanticProvider = semanticProvider
         let engine = VisionLocalizer()
-        self.localizer = localizer ?? engine.localize
+        if let authorizedLocalizer { self.localizer = authorizedLocalizer }
+        else if let localizer { self.localizer = { request, reference, _ in try localizer(request, reference) } }
+        else { self.localizer = { request, reference, authorization in try engine.localize(request, reference, authorizedCandidateID: authorization) } }
         let parts = timeout.components
         self.timeoutNanoseconds = UInt64(max(0, parts.seconds)) * 1_000_000_000
             + UInt64(max(0, parts.attoseconds / 1_000_000_000))
@@ -93,6 +108,10 @@ actor VisionWorker {
             semanticLabel = nil
             semanticStatus = nil
             semanticPending = nil
+            candidateID = nil
+            authorizedCandidateID = nil
+            comparisonPending = nil
+            comparedCandidateID = nil
             if let pending { finish(pending, .failure(ObservationError.obsolete)); self.pending = nil }
         } else {
             latestFrameID = request.key.frameID
@@ -146,8 +165,9 @@ actor VisionWorker {
             )))
             return
         }
+        let authorization = authorizedCandidateID
         Task.detached(priority: .userInitiated) {
-            let result = Result { try localizer(submission.request, immutableReference) }
+            let result = Result { try localizer(submission.request, immutableReference, authorization) }
             await self.processingFinished(submission, result)
         }
     }
@@ -167,6 +187,30 @@ actor VisionWorker {
             semanticPending = submission.request
             launchSemanticIfIdle()
         }
+        if case .success(let localization) = result {
+            if localization.status == .candidate, let id = localization.candidateID,
+               localization.confidence >= 0.6, let rect = localization.rect {
+                if candidateID != id {
+                    candidateID = id
+                    authorizedCandidateID = nil
+                    comparedCandidateID = nil
+                }
+                if comparedCandidateID != id {
+                    comparisonPending = FrameRequest(key: submission.request.key, jpeg: submission.request.jpeg, seedRect: rect)
+                }
+            } else {
+                candidateID = nil
+                authorizedCandidateID = nil
+                comparisonPending = nil
+                comparedCandidateID = nil
+            }
+        } else {
+            candidateID = nil
+            authorizedCandidateID = nil
+            comparisonPending = nil
+            comparedCandidateID = nil
+        }
+        launchSemanticIfIdle()
         finish(submission, result.map { result in
             DetectionReply(key: submission.request.key, rect: result.rect, confidence: result.confidence,
                            candidateID: result.candidateID, status: result.status,
@@ -179,25 +223,67 @@ actor VisionWorker {
     }
 
     private func launchSemanticIfIdle() {
-        guard !semanticActive, let request = semanticPending else { return }
-        semanticActive = true
-        semanticPending = nil
-        let scopeGeneration = generation
-        let provider = semanticProvider
-        Task.detached(priority: .utility) {
-            let result: Result<String, Error>
-            do { result = .success(try await provider(request)) }
-            catch { result = .failure(error) }
-            await self.semanticFinished(result, generation: scopeGeneration)
+        guard !semanticActive else { return }
+        if let request = semanticPending {
+            semanticActive = true
+            semanticPending = nil
+            let scopeGeneration = generation
+            let provider = semanticProvider
+            Task.detached(priority: .utility) {
+                let result: Result<String, Error>
+                do { result = .success(try await provider(request)) }
+                catch { result = .failure(error) }
+                await self.semanticFinished(result, generation: scopeGeneration)
+            }
+            return
         }
+        guard let candidate = comparisonPending, let reference, let id = candidateID,
+              comparedCandidateID != id, now() - lastComparisonTime >= 5 else { return }
+        comparisonPending = nil
+        comparedCandidateID = id
+        lastComparisonTime = now()
+        semanticActive = true
+        let scopeGeneration = generation
+        let comparator = comparator
+        Task.detached(priority: .utility) {
+            let result: Result<AstraLabeler.Comparison, Error>
+            do { result = .success(try await comparator(reference, candidate)) }
+            catch { result = .failure(error) }
+            await self.comparisonFinished(result, generation: scopeGeneration, candidateID: id)
+        }
+    }
+
+    private func comparisonFinished(_ result: Result<AstraLabeler.Comparison, Error>, generation: UInt64, candidateID: String) {
+        semanticActive = false
+        #if DEBUG
+        if generation == self.generation, self.candidateID == candidateID {
+            switch result {
+            case .success(let decision): print("Astra comparison candidate=\(candidateID) verdict=\(decision.verdict.rawValue) confidence=\(decision.confidence)")
+            case .failure: print("Astra comparison candidate=\(candidateID) unavailable")
+            }
+        } else { print("Astra comparison discarded: stale scope or candidate") }
+        #endif
+        if generation == self.generation, self.candidateID == candidateID,
+           case .success(let decision) = result, decision.authorizes {
+            authorizedCandidateID = candidateID
+        }
+        launchSemanticIfIdle()
     }
 
     private func semanticFinished(_ result: Result<String, Error>, generation: UInt64) {
         semanticActive = false
         if generation == self.generation {
             switch result {
-            case .success(let label): semanticLabel = label; semanticStatus = "ready"
-            case .failure: semanticLabel = nil; semanticStatus = "unavailable"
+            case .success(let label):
+                semanticLabel = label; semanticStatus = "ready"
+                #if DEBUG
+                print("Astra reference label ready generation=\(generation)")
+                #endif
+            case .failure:
+                semanticLabel = nil; semanticStatus = "unavailable"
+                #if DEBUG
+                print("Astra reference label unavailable generation=\(generation)")
+                #endif
             }
         }
         launchSemanticIfIdle()
@@ -237,8 +323,18 @@ final class VisionLocalizer: @unchecked Sendable {
     private var trackedObservation: VNDetectedObjectObservation?
     private var lastTrackingInputID: ObjectIdentifier?
     private var sequence = VNSequenceRequestHandler()
+    private var candidateObservation: VNDetectedObjectObservation?
+    private var candidateSequence = VNSequenceRequestHandler()
+    private var candidateID: String?
+    private var candidateTime: Double?
 
-    func localize(_ request: FrameRequest, _ reference: FrameRequest?) throws -> LocalizationResult {
+
+    func localize(_ request: FrameRequest, _ reference: FrameRequest?, authorizedCandidateID: String? = nil) throws -> LocalizationResult {
+        do { return try localizeFrame(request, reference, authorizedCandidateID: authorizedCandidateID) }
+        catch { clearCandidate(); throw error }
+    }
+
+    private func localizeFrame(_ request: FrameRequest, _ reference: FrameRequest?, authorizedCandidateID: String?) throws -> LocalizationResult {
         if reference == nil, request.isReference { reset() }
         guard let image = CIImage(data: request.jpeg) else { throw ObservationError.invalidJPEG }
         let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
@@ -273,6 +369,32 @@ final class VisionLocalizer: @unchecked Sendable {
             self.trackedObservation = nil
         }
 
+        if let candidateObservation, let id = candidateID, let candidateTime {
+            if request.key.captureTime > candidateTime, request.key.captureTime - candidateTime <= 1 {
+                let tracking = VNTrackObjectRequest(detectedObjectObservation: candidateObservation)
+                tracking.trackingLevel = .accurate
+                do {
+                    try candidateSequence.perform([tracking], on: image, orientation: .up)
+                    if let current = tracking.results?.first as? VNDetectedObjectObservation,
+                       !tracking.isLastFrame, current.confidence >= 0.6 {
+                        self.candidateObservation = current
+                        self.candidateTime = request.key.captureTime
+                        let rect = current.boundingBox
+                        let promoted = authorizedCandidateID == id
+                        if promoted {
+                            trackedObservation = current
+                            sequence = candidateSequence
+                            clearCandidate()
+                        }
+                        return LocalizationResult(rect: [rect.minX, 1 - rect.maxY, rect.width, rect.height],
+                            confidence: Double(current.confidence), candidateID: promoted ? nil : id,
+                            status: promoted ? .tracked : .candidate)
+                    }
+                } catch { /* A failed advance retires continuity before proposing anew. */ }
+            }
+            clearCandidate()
+        }
+
         guard let referencePrint else {
             return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
         }
@@ -287,16 +409,46 @@ final class VisionLocalizer: @unchecked Sendable {
             try referencePrint.computeDistance(&distance, to: print)
             if best == nil || distance < best!.1 { best = (candidate, distance) }
         }
-        if let (candidate, distance) = best {
-            let rect = candidate.boundingBox
-            return LocalizationResult(rect: [rect.minX, 1 - rect.maxY, rect.width, rect.height],
-                                      confidence: max(0, 1 - Double(distance)),
-                                      candidateID: UUID().uuidString, status: .candidate)
+        if let (candidate, _) = best {
+            return try initializeCandidate(image: image, rect: candidate.boundingBox, time: request.key.captureTime)
         }
+        clearCandidate()
         return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
     }
 
+    private func initializeCandidate(image: CIImage, rect: CGRect, time: Double) throws -> LocalizationResult {
+        clearCandidate()
+        let initialize = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: rect))
+        initialize.trackingLevel = .accurate
+        try candidateSequence.perform([initialize], on: image, orientation: .up)
+        guard let initialized = initialize.results?.first as? VNDetectedObjectObservation, initialized.confidence >= 0.6 else {
+            return LocalizationResult(rect: nil, confidence: 0, candidateID: nil, status: .notFound)
+        }
+        let id = UUID().uuidString
+        candidateID = id
+        candidateObservation = initialized
+        candidateTime = time
+        let bounds = initialized.boundingBox
+        return LocalizationResult(rect: [bounds.minX, 1 - bounds.maxY, bounds.width, bounds.height],
+            confidence: Double(initialized.confidence), candidateID: id, status: .candidate)
+    }
+
+    // Inject a deterministic proposal while exercising the production Vision candidate sequence.
+    func initializeCandidateForTesting(_ request: FrameRequest, rect: CGRect) throws -> LocalizationResult {
+        guard let image = CIImage(data: request.jpeg) else { throw ObservationError.invalidJPEG }
+        trackedObservation = nil
+        return try initializeCandidate(image: image, rect: rect, time: request.key.captureTime)
+    }
+
+    private func clearCandidate() {
+        candidateID = nil
+        candidateObservation = nil
+        candidateTime = nil
+        candidateSequence = VNSequenceRequestHandler()
+    }
+
     private func reset() {
+        clearCandidate()
         referencePrint = nil
         trackedObservation = nil
         sequence = VNSequenceRequestHandler()
