@@ -4,7 +4,7 @@
 
 **Goal:** Build and validate the approved one-object AR diff prototype on iPhone 15 Pro, including captured Gaussian appearance and live Astra re-identification.
 
-**Architecture:** The iPhone owns geometry, reference state, and rendering. A nearby Mac continuously assists with Vision localization, builds depth-initialized Gaussian assets, and makes less frequent Astra requests. Shared Swift value types connect the two; no database, job broker, or cloud deployment.
+**Architecture:** The iPhone owns geometry, reference state, and rendering. A nearby Mac continuously assists with Vision localization, runs an existing Gaussian trainer on calibrated captures, and makes less frequent Astra requests. Shared Swift value types connect the two; no database, job broker, or cloud deployment.
 
 **Tech Stack:** Swift, SwiftUI, ARKit, RealityKit, Vision, URLSession; a macOS Swift executable with Vapor 4 for HTTP; MetalSplatter/Metal for the splat rendering stage only.
 
@@ -28,7 +28,9 @@ The repository contains documentation only. Verified environment: Apple Silicon,
 
 Keep one integrated plan because the Mac and phone jointly implement a single interaction. Every task below has its own testable result and commit. Code blocks define essential contracts or algorithms, not complete framework boilerplate. Read the installed SDK declarations before implementing framework calls.
 
-Use depth-initialized Gaussian reconstruction on the Mac: fuse masked RGB-D samples into object-local Gaussians with color, scale, orientation, and opacity. This is approximate appearance, not a promise of photometrically optimized 3DGS. It avoids assuming a CUDA machine. Evaluate visual quality on a captured object; if inadequate, report that failure and investigate an optimizer before claiming the splat milestone complete.
+Research update (September 8): read [the component review](../../research/2026-09-08-reusable-components.md) before selecting dependencies. Evaluate Brush first and msplat v1.1.4 second for trained appearance; retain depth-initialized Gaussians as a preview/fallback. Current Brush code has an open regression report on AMD/Linux, so compare it with v0.3.0 on our Mac before pinning. All compatibility and performance checks remain unrun.
+
+Keep Vision as the baseline. After task 3, compare real temporal EdgeTAM on the Mac using Transformers' streaming implementation. The existing Core ML example is image segmentation, and the full temporal export remains an open PR. A Python worker is conditional on measured benefit; the Swift server remains the baseline. Do not raise the phone's OS minimum for an unproven wrapper.
 
 ## File map
 
@@ -40,7 +42,7 @@ Use depth-initialized Gaussian reconstruction on the Mac: fuse masked RGB-D samp
 - `ios/RealityGit/Capture/`: guided capture and upload.
 - `ios/RealityGit/Rendering/`: RealityKit proxy scene and later splat overlay.
 - `Packages/RealityGitCore/`: shared models, pure reconciliation, wire contracts and tests.
-- `server/`: macOS Swift package; HTTP routes, Vision worker, capture fusion, Astra adapter.
+- `server/`: macOS Swift package; HTTP routes, Vision worker, dataset export/trainer process, Astra adapter.
 - `docs/testing/device-validation.md`: observed results and tuning, explicitly distinguishing unrun checks.
 - `docs/integrations/astra.md`: verified provider contract and access requirements.
 
@@ -128,6 +130,7 @@ Here `fixtureJPEG` is a checked-in tiny synthetic image and `worker` is the Visi
 - [ ] Implement `VisionWorker.observe(_:) async throws -> DetectionReply` on a dedicated serial worker off HTTP event loops. Continue the selected track; when lost, enumerate foreground candidates and compare Vision feature prints against the reference crop. Return uncertainty for ambiguous candidates; live Astra acceptance arrives in task 10.
 - [ ] Start at 2 samples/second and a 640-pixel long edge; allow configuration. One in-flight request plus one replaceable pending observation. Bound source buffers to 12 sampled frames and expire after 5 seconds. Use a 3-second observation timeout; do not retry obsolete frames.
 - [ ] Add a manually entered Mac address, local network usage description, and narrowly scoped development local-network transport configuration. Limit server observation bodies to 4 MB; bind to LAN only when explicitly launched for phone use. No accounts or Internet deployment.
+- [ ] Record a short clip with occlusion, camera movement and a lookalike. Compare baseline Vision with temporal EdgeTAM on the Mac before choosing an enhanced worker. Verify MPS execution, bounded streaming memory and source-frame IDs; keep Vision if the candidate fails or adds no measurable benefit. Record results in `docs/testing/tracker-comparison.md`. Do not substitute repeated fixed-point segmentation for temporal propagation.
 - [ ] Run server tests, core tests, and app build. On the phone verify repeated Mac detections and continued local tracking after stopping the server. Commit `feat: add continuous Mac vision assistance`.
 
 ### Task 4: Immutable reference and ordered reconciliation
@@ -198,27 +201,40 @@ XCTAssertThrowsError(try CaptureValidator.validate(depth: [1], width: 2, height:
 Define `CaptureValidator.validate(depth: [Float], width: Int, height: Int) throws`; invalid depth pixels may be represented by zero and skipped, but nonfinite serialized data and size mismatches are rejected. Reject nonfinite matrices and invalid file identifiers as well.
 - [ ] Run tests and device capture. Inspect a saved image/mask/depth trio for alignment; commit `feat: capture calibrated object views for reconstruction`.
 
-### Task 7: Reconstruct approximate Gaussian appearance on Mac
+### Task 7: Train object appearance with an existing Mac engine
 
-**Files:** Create server `Reconstruction/Gaussian.swift`, `DepthFusion.swift`, `SplatWriter.swift`, `ReconstructionJob.swift`, tests `DepthFusionTests.swift`, `SplatWriterTests.swift`; modify Routes.
+**Files:** Create server `Reconstruction/NerfstudioExporter.swift`, `TrainerProcess.swift`, `ReconstructionJob.swift`, tests `NerfstudioExporterTests.swift`, `TrainerProcessTests.swift`, and `docs/testing/trainer-comparison.md`; modify Routes.
 
-**Interfaces:** `Gaussian` has object-local mean, positive scale, unit quaternion, RGB and opacity. `DepthFusion.reconstruct(manifest: CaptureManifest, root: URL) throws -> [Gaussian]`. `SplatWriter.write(_ gaussians: [Gaussian], to: URL) throws`. Job status is queued/running/ready/failed with capture/session/object IDs and optional asset URL/bounds/transform.
+**Interfaces:** `NerfstudioExporter.export(manifest: CaptureManifest, root: URL) throws -> URL` returns a trainer dataset directory. `TrainerProcess.run(dataset: URL, output: URL) async throws -> URL` runs one pinned local trainer and returns its PLY. Job status is queued/running/ready/failed with capture/session/object IDs, asset URL, bounds, and an explicit asset-to-object transform.
 
-- [ ] Test transform and fusion before implementation: the same point observed by two translated cameras must land in the same object-local voxel. Invalid depth and unmasked pixels must contribute no Gaussian.
-- [ ] Unproject masked confident depth and apply `inverse(referenceTransform) * cameraTransform`. Fuse in 5 mm voxels, averaging supported positions and colors. Reject isolated outliers and cap at 100,000 Gaussians. Work outside the server's Vision and HTTP executors.
-- [ ] Initialize each Gaussian with isotropic positive scale derived from pixel footprint and voxel spacing, identity quaternion and opacity 0.7. This is genuine approximate Gaussian appearance but not learned covariance/radiance. Evaluate silhouette coverage; do not call missing surfaces reconstructed.
-- [ ] Export a standard binary little-endian Gaussian PLY. Essential field conversion:
+- [ ] Export calibrated RGBA views, a masked metric seed PLY, and `transforms.json`. Transform camera poses and seed points into the same object-local frame. Store any further trainer normalization in output metadata. Never mix Swift column-major arrays with Nerfstudio's nested row arrays:
 
 ```swift
-let c0: Float = 0.28209479177387814
-let dc = (rgb - SIMD3<Float>(repeating: 0.5)) / c0
-let storedOpacity = log(opacity / (1 - opacity))
-let storedScale = SIMD3(log(scale.x), log(scale.y), log(scale.z))
-// x,y,z; nx,ny,nz=0; f_dc_0..2; opacity; scale_0..2; rot_0..3 in w,x,y,z order.
+let rows: [[Float]] = (0..<4).map { row in
+    (0..<4).map { column in objectFromCamera[column][row] }
+}
+// objectFromCamera = inverse(referenceTransform) * cameraToWorld
+// transforms.json: frames[].transform_matrix = rows
+// frames[] also carries file_path, w, h, fl_x, fl_y, cx, cy.
+// ply_file_path points to the metric seed cloud in the same frame.
 ```
 
-- [ ] Add `GET /captures/:id/status` and `GET /captures/:id/asset`. Return identity asset-to-object transform because vertices are already object-local, plus reference metadata. Invalidated sessions cannot install completed jobs; cleanup temporary captures on reset or a 30-minute idle expiry.
-- [ ] Test binary field order, finite output and transform round-trip. Reconstruct a real capture and inspect in a splat viewer before committing `feat: reconstruct depth-initialized object Gaussians`.
+- [ ] Write exporter tests before implementation: two views of the same world point produce identical object-local seed positions; resizing scales intrinsics; transparent pixels do not seed points. Run core/server tests and confirm failures before adding the exporter.
+- [ ] Evaluate pinned Brush v0.3.0 and reviewed current commit `5a9d4cfaa9c4e167924fbed586e6def3fa20433b` on one identical capture. Inspect `brush --help` for that revision's actual training/export flags and record the exact command. Compare mask semantics, usable asset time, memory, silhouette, background leakage and metric alignment. Repeat one run. The newer revision is not automatically preferred.
+- [ ] If Brush fails the capture/alignment check, evaluate msplat v1.1.4 (`6b819711fa7c90f054567cb4fb4937743367afdd`) using its documented C++ CLI. Inspect mask/alpha loss behavior and preserve or invert `autoScaleAndCenter`; output in meters must be demonstrated, not assumed. Record the exact passing revision and command. Do not build both trainers into the product; retain one chosen process adapter.
+- [ ] Run the trainer using Foundation Process with an argument array, one reconstruction at a time, bounded logs and cancellation. Keep work off the Vision/HTTP executors. Test nonzero exit, cancellation, missing/invalid output, and wrong-session completion using a tiny deterministic fixture process. Invoke it without shell interpolation:
+
+```swift
+let process = Process()
+process.executableURL = executableURL
+process.arguments = validatedArguments
+try process.run()
+// Drain stdout/stderr concurrently, cap retained log text,
+// await termination asynchronously, then validate exit status and PLY.
+```
+
+- [ ] Add `GET /captures/:id/status` and `GET /captures/:id/asset`. Validate finite asset coordinates, bounds and splat budget. Invalidate old-session jobs and clean temporary captures on reset or 30-minute idle expiry. If no trainer passes, retain the geometric proxy and report the failed milestone; depth Gaussians may be used as an explicitly approximate preview, not a reason to claim trained appearance works.
+- [ ] Verify the chosen output in a splat viewer, run exporter/process tests, and commit `feat: train captured object appearance with a pinned Mac engine`.
 
 ### Task 8: Render aligned red Gaussian ghosts
 
