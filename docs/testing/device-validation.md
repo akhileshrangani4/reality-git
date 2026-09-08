@@ -1,5 +1,16 @@
 # Device validation
 
+## Astra-led capture update — September 8, 2026
+
+- Replaced the production Mac-Vision candidate chain with full-frame Astra selection, silhouette and reacquisition, using `gpt-6-astra` at low effort throughout.
+- Removed Apple segmentation, appearance signatures and background-ring requirements from capture/current geometry. The phone samples LiDAR within Astra's outline; local Vision only advances pixels between answers.
+- The first updated phone run captured a native 648-point Gaussian surface after a 4.9-second Astra answer. Device logs also recorded measured movement and local tracking interruptions. This verifies actual capture and movement-state telemetry, not visual correctness or sustained tracking.
+- That run exposed a remaining dependency: a successful Astra location could still be lost when Vision failed to advance. The follow-up uses Astra-confirmed source depth directly for movement/restoration and a bounded, explicitly last-seen green world marker. Old snapshots cannot rewind newer position evidence or confirmed absence. Fresh local tracking still smooths the live overlay.
+- Core tests: 50 XCTest + 2 Swift Testing pass. Server: 33 deterministic tests pass; the opt-in live test passes separately on synthetic selection/movement (about 5.3 s / 3.9 s). Signed iPhone build passes. A successful compile or mocked test is not an end-to-end physical tracking pass.
+- The capture screen is reduced to camera, one status line, and Settings. Setup, shape preview and Start over are in Settings. The unrelated floating test cube is removed.
+- The final snapshot build is installed and launched on the connected iPhone 15 Pro; AR reports ready. The updated local Astra service is running and health passes.
+- Remaining physical checks: repeat moving/restoring the object with the final snapshot path, rapid motion, occlusion/lookalikes, last-seen marker expiry, and sustained world-anchor accuracy.
+
 ## Current checkpoint — captured Gaussian preview
 
 - Diagnostic build `0ff8235` is now installed and launched. Its tracking behavior is unchanged from `dd16c9e`; it records up to three local, bounded rejection cases with exact signature aggregates and sampled construction inputs. No images or credentials are recorded by this diagnostic. 45 XCTest and 2 Swift Testing checks, native/signed builds, and scoped diagnostic review pass. Device case collection and exact local replay are pending.

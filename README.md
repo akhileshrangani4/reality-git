@@ -1,30 +1,21 @@
 # Reality Git
 
-An iPhone AR prototype that tracks changes to objects in a room and displays their previous positions.
+An iPhone AR prototype that remembers an object's place and shows what changed.
 
-The user scans a room and selects objects to track. The system automatically records semantic identity, approximate 3D appearance, and world-space pose without a manual commit step.
+Connect Astra in Settings, tap an object or draw around it, then move it. A red captured-surface ghost marks the remembered place; green follows the object, or marks Astra’s last measured position while local tracking catches up. Returning it clears the diff. Off-camera or occluded objects remain unknown unless measured depth shows the old region is empty.
 
-## Behavior
+## Responsibilities
 
-- **Unchanged:** No overlay.
-- **Moved:** A translucent red Gaussian-splat ghost at the reference pose and a translucent green overlay at the current pose.
-- **Absent:** Only the red ghost, after the previous region is visible and absence is confidently established. Off-camera or occluded objects remain unknown.
-- **Restored:** Returning to approximately the reference pose clears the diff.
+- **GPT-6 Astra, low effort:** Selects the object, labels it, traces its visible silhouette, and finds the same object anywhere in subsequent full camera frames. One structured model call handles each observation. It runs throughout tracking, including after loss.
+- **iPhone camera, ARKit and LiDAR:** Supply images, depth, calibration, and world coordinates. Depth inside Astra's outline builds the immutable saved surface. No Apple segmentation, feature-print matching, or shape-signature gate decides identity.
+- **Vision:** Advances Astra's pixels between replies for responsive overlays. Buffered images bridge network latency; this local track cannot independently reacquire or identify an object. Astra-confirmed source depth can establish a move or restoration even when this advance fails.
+- **RealityKit:** Prepares native Gaussian splats once the reference is captured and shows/hides the cached overlays as movement is confirmed.
+- **Local Mac service:** Relays camera images to Astra and holds the reference crop in memory. The API key stays on the Mac.
 
-For the MVP, the initial captured pose remains the reference; observations update the current pose separately.
+The main screen contains the camera, one status line, and Settings. Connection, remembered-shape preview and Start over are in Settings. A saved connection is restored on launch; Disconnect forgets it.
 
-## Approach
+## Validation
 
-- **iPhone 15 Pro, ARKit, and LiDAR:** Camera tracking, depth, anchors, and world coordinates.
-- **Vision and local tracking:** Fast object observations that keep the experience responsive.
-- **RealityKit:** AR overlays and scene management.
-- **Gaussian Splats:** A cached first-view surface from LiDAR and camera colors, rendered with iOS 27's native RealityKit splat support. Guided multi-view capture and trained reconstruction remain future work.
-- **GPT-6 Astra:** Periodic semantic identity, re-identification, and world-state reconciliation outside the frame loop.
+Core and server automated checks, a live Astra selection/reacquisition smoke test on synthetic images, and a signed iPhone build pass. The live smoke measured approximately 5.3 seconds for initial selection and 3.9 seconds for reacquisition; these are individual measurements, not latency guarantees. Sustained physical tracking, lookalikes, occlusion and restoration still require device validation.
 
-The captured surface is partial and approximate. It preserves the observed shape rather than reconstructing unseen sides; an explicit bounds fallback is shown if native resource creation fails.
-
-## MVP
-
-One object, one room, one AR session. Use confidence thresholds and consecutive observations to suppress false movement and absence reports. Defer cross-session persistence, full-room reconstruction, and history browsing.
-
-See [BUILD_PROMPT.md](BUILD_PROMPT.md) for the implementation sequence. The app runs on the physical iPhone 15 Pro with camera/depth, local and Mac-assisted tracking, live Astra comparisons, an immutable reference, and native captured Gaussian rendering. The user has confirmed seeing the saved shape and the red ghost after moving the object. The green current-position overlay still fails in physical testing; automatic restoration and sustained anchor accuracy are not validated. See [device setup and validation](docs/testing/device-validation.md) for the current checkpoint and earlier failures. Open `ios/RealityGit.xcodeproj` with Xcode 27.
+The splat is a partial depth surface from the observed view, not a reconstruction of unseen sides. The MVP remains one object, one room, one AR session. Open `ios/RealityGit.xcodeproj` in Xcode 27. See [setup](docs/testing/mac-assistant-setup.md) and [device validation](docs/testing/device-validation.md).

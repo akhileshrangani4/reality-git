@@ -44,8 +44,6 @@ final class ARSessionController: NSObject, ObservableObject {
     private var lastInferenceMessage = ""
     private var lastResultTime: TimeInterval = 0
     private var resultCameraPose: simd_float4x4?
-    private var marker: AnchorEntity?
-    private var lastMarkerDiagnostic: TimeInterval = -.infinity
     private var wantsRunning = false
     private var isRunning = false
     private var isStarting = false
@@ -104,7 +102,6 @@ final class ARSessionController: NSObject, ObservableObject {
         guard isRunning else { return }
         arView.session.pause()
         isRunning = false
-        marker?.isEnabled = false
         hasDepth = false
         status = .paused
     }
@@ -116,55 +113,26 @@ final class ARSessionController: NSObject, ObservableObject {
         #endif
         guard wantsRunning, let configuration else { return }
         invalidateSelection()
-        marker?.removeFromParent()
-        marker = nil
         hasDepth = false
         status = .scanning
         isRunning = true
         arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
     }
 
-    private func placeMarker(in frame: ARFrame) {
-        var offset = matrix_identity_float4x4
-        offset.columns.3.z = -1
-        let anchor = AnchorEntity(world: frame.camera.transform * offset)
-        let material = UnlitMaterial(color: .systemMint)
-        let cube = ModelEntity(mesh: .generateBox(size: 0.08, cornerRadius: 0.008), materials: [material])
-        anchor.addChild(cube)
-        arView.scene.addAnchor(anchor)
-        marker = anchor
-        #if DEBUG
-        print("Marker placed world=\(anchor.position(relativeTo: nil)) camera=\(frame.camera.transform.columns.3) tracking=\(frame.camera.trackingState)")
-        #endif
-    }
-
     private func update(from frame: ARFrame) {
         guard wantsRunning, isRunning else { return }
         assistant.tick(now: frame.timestamp)
         objectSession.expire(now: frame.timestamp)
-        #if DEBUG
-        if let marker, frame.timestamp - lastMarkerDiagnostic >= 1 {
-            lastMarkerDiagnostic = frame.timestamp
-            let camera = frame.camera.transform.columns.3
-            let world = marker.position(relativeTo: nil)
-            let distance = simd_distance(world, SIMD3(camera.x, camera.y, camera.z))
-            print("Marker world=\(world) camera=\(camera) distance=\(distance) tracking=\(frame.camera.trackingState)")
-        }
-        #endif
         let depthAvailable = frame.sceneDepth != nil
         if hasDepth != depthAvailable { hasDepth = depthAvailable }
 
         let next: TrackingStatus
         switch frame.camera.trackingState {
         case .normal:
-            if marker == nil, !hasSelection, depthAvailable { placeMarker(in: frame) }
-            marker?.isEnabled = true
-            next = marker == nil && !hasSelection ? .waitingForDepth : .ready
+            next = depthAvailable ? .ready : .waitingForDepth
         case .notAvailable:
-            marker?.isEnabled = false
-            next = .limited("Camera tracking is unavailable. Look around the same area, or place a new marker.")
+            next = .limited("Camera tracking is unavailable. Look around the same area.")
         case .limited(let reason):
-            marker?.isEnabled = false
             switch reason {
             case .initializing:
                 next = .scanning
@@ -173,7 +141,7 @@ final class ARSessionController: NSObject, ObservableObject {
             case .insufficientFeatures:
                 next = .limited("Point toward a well-lit area with texture, such as a desk or bookshelf.")
             case .relocalizing:
-                next = .limited("Look around the area you scanned. If the marker cannot recover, place a new one.")
+                next = .limited("Look around the area you scanned. Move slowly to recover tracking.")
             @unknown default:
                 next = .limited("Move slowly around the same area to recover tracking.")
             }
@@ -191,10 +159,10 @@ final class ARSessionController: NSObject, ObservableObject {
             } else if let imageRect {
                 selectionRect = screenRect(imageRect, frame: frame)
             }
-            let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 0.2
+            let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 0.125
             let assistantDue = assistant.wantsSample(at: frame.timestamp)
             if (localDue || assistantDue), let sample = FrameSample(frame: frame) {
-                if assistantDue { assistant.offer(sample, rect: nil) }
+                if assistantDue { assistant.offer(sample) }
                 if localDue {
                     lastSampleTime = frame.timestamp
                     submit(sample, selection: nil)
@@ -205,14 +173,17 @@ final class ARSessionController: NSObject, ObservableObject {
             selectedPosition = nil
             objectSession.loseCurrent()
         }
-        diffRenderer.update(in: arView, reference: objectSession.reference, current: objectSession.current,
+        // When local advancement fails, green marks Astra's last measured world position.
+        // Historical image rectangles are never projected directly onto the current screen.
+        let displayPosition = objectSession.current ?? (selectionRect == nil ? objectSession.observedPosition(now: frame.timestamp) : nil)
+        diffRenderer.update(in: arView, reference: objectSession.reference, current: displayPosition,
             showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state.showsCurrentOverlay,
             reliable: next.isReady)
         if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }
     }
 
     func select(point: CGPoint) {
-        guard let frame = arView.session.currentFrame, status.isReady else { return }
+        guard let frame = arView.session.currentFrame, status.isReady, assistant.connected else { return }
         let transform = frame.displayTransform(viewRotationAngle: viewRotationAngle, viewportSize: arView.bounds.size)
         guard let imagePoint = ImageCoordinates.imagePoint(viewPoint: point,
             viewport: arView.bounds.size, displayTransform: transform) else { return }
@@ -220,7 +191,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     func select(rect: CGRect) {
-        guard let frame = arView.session.currentFrame, status.isReady else { return }
+        guard let frame = arView.session.currentFrame, status.isReady, assistant.connected else { return }
         let transform = frame.displayTransform(viewRotationAngle: viewRotationAngle, viewportSize: arView.bounds.size)
         let points = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
                       CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)]
@@ -279,14 +250,7 @@ final class ARSessionController: NSObject, ObservableObject {
         selectionRect = nil
         selectedPosition = nil
         selectionMessage = "Finding the selected object…"
-        if case .rectangle(let box) = selection,
-           let seed = LocalTrackingEvidence.validSelectionRectangle(box) {
-            // Human-selected pixels can initialize appearance tracking before segmentation finishes.
-            assistant.offer(sample, rect: seed)
-            selectionMessage = "Object selected · finding depth."
-        }
-        marker?.removeFromParent()
-        marker = nil
+        assistant.select(sample, selection: selection, preserveReference: objectSession.reference != nil)
         if workerBusy {
             // Keep only the newest selection, with the exact image it refers to.
             pendingSelection = (sample, selection)
@@ -357,7 +321,7 @@ final class ARSessionController: NSObject, ObservableObject {
         let key = objectSession.key(for: sample)
         let referencePosition = objectSession.reference?.position
         Task {
-            let result = await tracker.process(sample, selection: selection, generation: generation, recovery: recovery, key: key, referencePosition: referencePosition)
+            let result = await tracker.process(sample, generation: generation, recovery: recovery, referencePosition: referencePosition)
             workerBusy = false
             #if DEBUG
             let shouldLogInference = result.message != lastInferenceMessage || sample.timestamp - lastInferenceDiagnosticTime >= 1
@@ -368,19 +332,18 @@ final class ARSessionController: NSObject, ObservableObject {
             }
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
-               let latest = arView.session.currentFrame, latest.timestamp - sample.timestamp <= 1 {
+               let latest = arView.session.currentFrame {
                 objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: ReferenceVisibility.occupiedRect(trackedRect: result.rect, position: result.worldPosition, bounds: result.worldBounds, confidence: result.confidence)))
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld
                 localTrackConfidence = result.confidence
                 imageRect = result.rect
-                assistant.offer(sample, rect: result.initializationRect ?? result.referenceRect)
                 selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
                 selectionMessage = result.message
                 selectionRect = overlayIsFresh(in: latest) ? result.rect.map { screenRect($0, frame: latest) } : nil
                 #if DEBUG
                 if shouldLogInference {
-                    print("Local geometry overlay=\(selectionRect != nil) metric=\(selectedPosition != nil) mask=\(result.referenceRect != nil)")
+                    print("Astra geometry overlay=\(selectionRect != nil) metric=\(selectedPosition != nil) reference=\(result.referenceCapture != nil)")
                 }
                 #endif
             }
@@ -403,7 +366,6 @@ extension ARSessionController: @preconcurrency ARSessionDelegate {
         #endif
         guard wantsRunning else { return }
         suspendSelection()
-        marker?.isEnabled = false
         hasDepth = false
         status = .interrupted
     }
@@ -420,7 +382,6 @@ extension ARSessionController: @preconcurrency ARSessionDelegate {
         guard wantsRunning else { return }
         isRunning = false
         suspendSelection()
-        marker?.isEnabled = false
         hasDepth = false
         status = .failed(error.localizedDescription)
     }

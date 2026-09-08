@@ -1,41 +1,33 @@
-# Mac assistant setup
+# Astra service setup
 
-The Mac service assists localization; it does not yet drive confirmed movement diffs or call Astra.
+The Mac relays images to Astra. Astra selects, labels, outlines and reacquires the object; Apple supplies camera/depth and advances the model's pixels between observations.
 
 ## Run
 
-From the repository root with the selected Xcode toolchain:
-
-```sh
-swift run --package-path server RealityGitServer
-```
-
-This binds to localhost on port 8080. For the phone on the same trusted local network, launch explicitly with:
+Set `OPENAI_API_KEY` in the server environment, then run from the repository root:
 
 ```sh
 swift run --package-path server RealityGitServer --lan
 ```
 
-The LAN option listens on all IPv4 interfaces. This is a local hackathon service without authentication; do not expose it to the Internet. The phone sends sampled camera JPEGs only after you enable the connection. Frames/reference appearance are held in memory, not written to image files by this milestone. Stop the process to clear server state.
-
-Check the service locally:
+Without `--lan`, the service listens only on localhost. The LAN option listens on port 8080 on all IPv4 interfaces. Keep this unauthenticated hackathon service on a trusted local network.
 
 ```sh
 curl http://127.0.0.1:8080/health
 ```
 
-Expected response: `{"status":"ok"}`.
+Expected response: `{"status":"ok"}`. Health checks transport; actual model access is exercised by an observation.
 
-## Connect the phone
+## Connect
 
-1. Open Reality Git and tap **Mac assistance**.
-2. Enter `http://YOUR-MAC.local:8080` or the Mac's private IPv4 address with port 8080. You can find the local name with `scutil --get LocalHostName`.
-3. Connect and allow local network access if prompted.
-4. Select an object. The app sends the selection's exact source frame to initialize the Mac reference, then current sampled observations. A candidate match remains unconfirmed.
-5. Stop the server while tracking. Local tracking should continue; record the actual outcome in device validation.
+1. Open the app's Settings button, enter `http://YOUR-MAC.local:8080` or the Mac's private IPv4 address, and connect.
+2. Allow local network and camera access if prompted. Camera images go through the Mac to OpenAI for Astra perception.
+3. Tap an object or draw around it. The selection's exact source image and LiDAR snapshot stay paired while Astra identifies its outline.
+4. Once remembered, move the object about 20–30 cm. Red marks its old place and green follows its current position.
+5. Test leaving the frame and returning, then restoring its original position. Record actual results separately from build/test success.
 
-Default sampling is two observations per second with a 640-pixel long edge, not a promised processing rate. Older queued samples are replaced, requests time out after three seconds, and source geometry expires after five seconds. An expired reply cannot supply current geometry. Native camera image axes are preserved across the wire.
+The connection is restored on app launch. Disconnect clears the saved address. Reconnecting clears the selection; reselect after a service restart.
 
-If the server restarts and loses the reference, reselect the object explicitly. Physical phone connection, disconnect/recovery and tracker quality must be recorded separately from automated route tests.
+Current images have a 960-pixel long edge. At most one request is active, with a 0.5-second minimum sampling interval. Provider requests use `gpt-6-astra` with `reasoning.effort=low`; the phone allows 25 seconds for transport and retains the exact request source for up to 30 seconds. An old response can build the original reference from its own depth; it can never be drawn directly as a fresh screen overlay. Local tracking advances through a bounded camera history and expires without renewed Astra authority after 10 seconds from the last confirmed source.
 
-If Safari on the phone cannot open the Mac's `/health` URL, troubleshoot network reachability before the tracker. In the device test, shared Wi-Fi filtered traffic between clients despite both devices using the same network. Connecting the Mac to the iPhone's Personal Hotspot allowed observations through. Use the Mac's new address after switching networks, reconnect in the app, and reselect the object. A “Mac tracking active” status reports server tracking; it does not prove the phone has recovered its local box. Local recovery requires a fresh continuous track with confidence at least 0.6, then successful advancement from the saved source image to the current image. Tentative candidates cannot trigger it.
+If the phone cannot reach `/health`, check the network first. Shared Wi-Fi filtered client traffic in earlier testing; connecting the Mac to the iPhone's Personal Hotspot worked. Reconnect with the Mac's new address after changing networks.

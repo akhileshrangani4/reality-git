@@ -15,8 +15,28 @@ public struct DiffReducer: Sendable {
     private var lastEvidenceTime: Double = -.infinity
     private var lastFrame: UInt64?
     private var lastTime: Double = -.infinity
+    private var lastPositionEvidenceTime: Double = -.infinity
+    private var lastStateChangeTime: Double = -.infinity
+    private var lastAstraTime: Double = -.infinity
     public init(referencePosition: SIMD3<Float>) { self.referencePosition = referencePosition }
     public mutating func interruptConfirmation() { pending = nil; count = 0 }
+    /// A model-confirmed object's measured source depth can establish a diff even
+    /// when local pixel advancement fails. It must not rewind newer spatial evidence.
+    @discardableResult
+    public mutating func observeAstra(position: SIMD3<Float>, time: Double) -> Bool {
+        guard time.isFinite, time > lastAstraTime,
+              time >= lastPositionEvidenceTime, time >= lastStateChangeTime,
+              [position.x, position.y, position.z].allSatisfy(\.isFinite) else { return false }
+        lastAstraTime = time; lastPositionEvidenceTime = time
+        let distance = simd_distance(position, referencePosition)
+        let next: DiffState?
+        if distance > 0.15 { next = .moved }
+        else if distance < 0.08 { next = .unchanged }
+        else { next = nil }
+        if let next, next != state { state = next; lastStateChangeTime = time }
+        interruptConfirmation()
+        return true
+    }
     public mutating func observe(position: SIMD3<Float>?, identityConfirmed: Bool,
                                  visibility: VisibilityEvidence, time: Double, frameID: UInt64) {
         guard time.isFinite, time >= lastTime, lastFrame == nil || frameID > lastFrame! else { return }
@@ -26,6 +46,7 @@ public struct DiffReducer: Sendable {
         let desired: DiffState?
         let duration: Double
         if let position, identityConfirmed, [position.x, position.y, position.z].allSatisfy(\.isFinite) {
+            lastPositionEvidenceTime = time
             let distance = simd_distance(position, referencePosition)
             if distance > 0.15 { desired = .moved }
             else if distance < 0.08 { desired = .unchanged }
@@ -42,7 +63,7 @@ public struct DiffReducer: Sendable {
         guard desired != state else { interruptConfirmation(); return }
         if pending != desired { pending = desired; count = 1; started = time }
         else { count += 1 }
-        if count >= 3, time - started >= duration { state = desired; interruptConfirmation() }
+        if count >= 3, time - started >= duration { state = desired; lastStateChangeTime = time; interruptConfirmation() }
     }
 }
 

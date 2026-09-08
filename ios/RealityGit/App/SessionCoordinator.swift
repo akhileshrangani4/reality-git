@@ -3,8 +3,8 @@ import Foundation
 import simd
 import RealityGitCore
 
-/// Metric keys are local samples, independent of upload scheduling. Mac recovery becomes
-/// a local metric sample only after advancing and masking that exact current image.
+/// Astra's source snapshots establish changes; fresh local samples smooth the current pose.
+/// The immutable reference and last observed pose survive loss of local continuity separately.
 @MainActor
 final class SessionCoordinator: ObservableObject {
     @Published private(set) var reference: ReferenceState?
@@ -17,10 +17,18 @@ final class SessionCoordinator: ObservableObject {
     private var reducer: DiffReducer?
     private(set) var current: SIMD3<Float>?
     private(set) var lastPositionTime: Double = -.infinity
+    private var lastAstraSourceTime: Double = -.infinity
+    private var observed: ReferenceCapture?
+    func observedPosition(now: Double) -> SIMD3<Float>? {
+        guard state != .absent, let observed, now >= observed.timestamp,
+              now - observed.timestamp <= AstraGeometry.authorityLifetime else { return nil }
+        return observed.position
+    }
     func reset() {
         sessionID = UUID(); objectID = UUID(); frameID = 0
         reference = nil; reconciler = nil; reducer = nil; current = nil
         lastPositionTime = -.infinity; state = .unchanged
+        lastAstraSourceTime = -.infinity; observed = nil
         message = "Hold the selected object still to remember its place."
     }
     func key(for sample: FrameSample) -> ObservationKey {
@@ -36,23 +44,41 @@ final class SessionCoordinator: ObservableObject {
             print("Object diff: state=\(state) metric=\(result.worldPosition != nil) referenceDistance=\(distance.map(String.init(describing:)) ?? "unknown") age=\(now-key.captureTime) confidence=\(result.confidence)")
         }
         #endif
-        guard key.sessionID == sessionID, key.objectID == objectID,
+        guard key.sessionID == sessionID, key.objectID == objectID else { return }
+        if reference == nil, let capture = result.referenceCapture, capture.points.count >= 12,
+           capture.timestamp <= key.captureTime {
+            let captureKey = ObservationKey(sessionID: sessionID, objectID: objectID,
+                frameID: key.frameID, captureTime: capture.timestamp)
+            if let reference = ReferenceState(key: captureKey, position: capture.position, bounds: capture.bounds, points: capture.points) {
+                self.reference = reference
+                reconciler = Reconciler(referencePosition: reference.position, sessionID: sessionID, objectID: objectID)
+                reducer = DiffReducer(referencePosition: reference.position)
+            }
+        }
+        if result.astraSourceTime > lastAstraSourceTime {
+            lastAstraSourceTime = result.astraSourceTime
+            observed = nil
+            if let capture = result.astraCapture, now >= capture.timestamp,
+               now - capture.timestamp <= AstraGeometry.authorityLifetime,
+               reducer?.observeAstra(position: capture.position, time: capture.timestamp) == true {
+                observed = capture
+                state = reducer?.state ?? .unchanged
+                #if DEBUG
+                print("Astra snapshot accepted age=\(now - capture.timestamp)s state=\(state) distance=\(reference.map { simd_distance(capture.position, $0.position) } ?? 0)")
+                #endif
+            }
+        }
+        guard reference != nil,
               now >= key.captureTime, now - key.captureTime <= 0.5 else { return }
-        guard let position = result.worldPosition, let bounds = result.worldBounds,
+        guard let position = result.worldPosition, result.worldBounds != nil,
               result.confidence >= 0.6 else {
             current = nil
-            reducer?.observe(position: nil, identityConfirmed: false, visibility: visibility, time: key.captureTime, frameID: key.frameID)
+            // Empty reference depth does not establish absence while Astra still sees the object elsewhere.
+            let currentVisibility: VisibilityEvidence = observedPosition(now: now) == nil ? visibility : .unknown
+            reducer?.observe(position: nil, identityConfirmed: false, visibility: currentVisibility, time: key.captureTime, frameID: key.frameID)
             state = reducer?.state ?? .unchanged
             message = reference == nil ? "Capturing · hold still, or draw a box around the object." : (state == .absent ? "Absent · remembered shape marks its place." : "Looking for remembered object")
             return
-        }
-        if reference == nil {
-            // Freeze the first supported depth surface; later observations cannot replace it.
-            guard result.referenceRect != nil, result.capturedPoints.count >= 12,
-                  let reference = ReferenceState(key: key, position: position, bounds: bounds, points: result.capturedPoints) else { return }
-            self.reference = reference
-            reconciler = Reconciler(referencePosition: position, sessionID: sessionID, objectID: objectID)
-            reducer = DiffReducer(referencePosition: position)
         }
         guard reconciler?.accept(PositionObservation(key: key, position: position,
             identityConfirmed: true, confidence: result.confidence)) == true else { return }

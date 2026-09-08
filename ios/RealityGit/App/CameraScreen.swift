@@ -4,129 +4,148 @@ import SwiftUI
 struct CameraScreen: View {
     @StateObject private var controller = ARSessionController()
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.openURL) private var openURL
+    @State private var showsSettings = false
 
     var body: some View {
         ZStack {
-            CameraView(controller: controller)
-                .ignoresSafeArea()
-
+            CameraView(controller: controller).ignoresSafeArea()
             if let rect = controller.dragRect ?? controller.selectionRect {
-                Rectangle()
-                    .fill(controller.currentScreenOverlay == nil ? Color.clear : Color.green.opacity(0.25))
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(controller.currentScreenOverlay == nil ? Color.clear : Color.green.opacity(0.2))
                     .overlay {
-                        Rectangle().strokeBorder(controller.currentScreenOverlay == nil ? Color.mint : Color.green,
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(
+                            controller.currentScreenOverlay == nil ? Color.white.opacity(0.8) : .green,
                             style: StrokeStyle(lineWidth: 2, dash: controller.dragRect == nil ? [] : [6, 4]))
                     }
                     .frame(width: max(0, rect.width), height: max(0, rect.height))
                     .position(x: rect.midX, y: rect.midY)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                    .ignoresSafeArea().allowsHitTesting(false).accessibilityHidden(true)
             }
-
-            LinearGradient(
-                colors: [.black.opacity(0.65), .clear, .black.opacity(0.8)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("REALITY GIT")
-                            .font(.system(.caption, design: .monospaced).weight(.semibold))
-                            .tracking(3)
-                        Text("A place to remember.")
-                            .font(.title2.weight(.medium))
-                    }
+            LinearGradient(colors: [.black.opacity(0.45), .clear, .black.opacity(0.5)],
+                startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea().allowsHitTesting(false)
+            VStack {
+                HStack {
+                    Text("Reality Git").font(.headline)
                     Spacer()
-                    Image(systemName: "viewfinder")
-                        .font(.title2)
-                        .accessibilityHidden(true)
+                    Button { showsSettings = true } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .accessibilityLabel("Settings")
                 }
-                .padding(.top, 12)
-
                 Spacer()
-
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(controller.status.isReady ? Color.mint : Color.orange)
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-                        Text(controller.hasSelection && controller.status.isReady ? "Object tracking" : controller.status.title)
-                            .font(.headline)
-                        Spacer()
-                        if controller.hasDepth {
-                            Text("DEPTH READY")
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.mint)
-                        }
-                    }
-
-                    Text(controller.hasSelection && controller.status.isReady ? controller.selectionMessage : controller.status.message)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if controller.status.isReady && !controller.hasSelection {
-                        Text("Tap an object, or draw a box around it.")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.mint)
-                    }
-
-                    if controller.status == .cameraDenied {
-                        Button("Open Settings", systemImage: "gearshape") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                openURL(url)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.mint)
-                        .foregroundStyle(.black)
-                    } else if controller.canReset {
-                        Button("Start over", systemImage: "arrow.counterclockwise") {
-                            controller.reset()
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.white)
-                        .accessibilityHint("Clears the reference and starts a fresh room scan.")
-                    }
-
-                    ReferenceStatus(session: controller.objectSession, screenTrackVisible: controller.currentScreenOverlay != nil)
-                    if controller.objectSession.reference != nil {
-                        Text(controller.ghostStatus).font(.caption2).foregroundStyle(.secondary)
-                        Toggle("Preview remembered shape", isOn: $controller.previewReference).font(.caption)
-                    }
-                    AssistantControls(assistant: controller.assistant)
-
-                    Text(controller.hasSelection ? "OBJECT TRACKING CHECK · 02" : "WORLD TRACKING CHECK · 01")
-                        .font(.system(.caption2, design: .monospaced))
-                        .tracking(1.5)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(22)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-                .padding(.bottom, 16)
+                CaptureStatus(controller: controller, session: controller.objectSession,
+                    assistant: controller.assistant, showsSettings: $showsSettings)
+                    .padding(.bottom, 16)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 22).foregroundStyle(.white)
         }
+        .sheet(isPresented: $showsSettings) { CaptureSettings(controller: controller, assistant: controller.assistant) }
         .task {
+            if !controller.assistant.connected, let saved = UserDefaults.standard.string(forKey: "lastMacAddress") {
+                controller.assistant.connect(address: saved)
+            }
             await controller.start()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                Task { await controller.start() }
-            } else if phase == .background {
-                controller.pause()
+            if phase == .active { Task { await controller.start() } }
+            else if phase == .background { controller.pause() }
+        }
+        .onDisappear { controller.pause() }
+    }
+}
+
+private struct CaptureStatus: View {
+    @ObservedObject var controller: ARSessionController
+    @ObservedObject var session: SessionCoordinator
+    @ObservedObject var assistant: AssistantCoordinator
+    @Binding var showsSettings: Bool
+    @Environment(\.openURL) private var openURL
+
+    private var text: String {
+        if !controller.status.isReady { return controller.status.message }
+        if !assistant.connected { return "Let Astra remember where things belong." }
+        if !controller.hasSelection { return "Tap an object, or draw around it." }
+        if session.reference == nil { return assistant.message }
+        if session.state == .absent { return "Gone · red marks its place" }
+        if session.state == .moved {
+            let lastSeen = session.observedPosition(now: controller.arView.session.currentFrame?.timestamp ?? .infinity)
+            return session.current == nil && lastSeen != nil ? "Moved · last seen in green" : "Moved · red marks its place"
+        }
+        if session.current == nil { return assistant.message }
+        return "Remembered · try moving it"
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                if assistant.isThinking && session.reference == nil {
+                    ProgressView().tint(.white)
+                }
+                Text(text).font(.subheadline.weight(.medium))
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            if controller.status == .cameraDenied {
+                Button("Allow camera") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }.buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+            } else if !assistant.connected {
+                Button("Connect Astra") { showsSettings = true }
+                    .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
             }
         }
-        .onDisappear {
-            controller.pause()
+        .padding(.horizontal, 20).padding(.vertical, 16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct CaptureSettings: View {
+    @ObservedObject var controller: ARSessionController
+    @ObservedObject var assistant: AssistantCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = UserDefaults.standard.string(forKey: "lastMacAddress") ?? "http://"
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Astra connection") {
+                    TextField("http://your-mac.local:8080", text: $address)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    Text("Astra recognizes and finds your object. Camera images go through your local server to OpenAI; your iPhone supplies depth and places the overlays.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button(assistant.connected ? "Reconnect" : "Connect") {
+                        if assistant.connect(address: address) {
+                            UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "lastMacAddress")
+                            controller.reset()
+                            dismiss()
+                        }
+                    }
+                    if assistant.connected {
+                        Button("Disconnect") {
+                            assistant.disconnect()
+                            UserDefaults.standard.removeObject(forKey: "lastMacAddress")
+                            controller.reset()
+                            dismiss()
+                        }
+                    }
+                    Text(assistant.message).font(.caption).foregroundStyle(.secondary)
+                }
+                if controller.objectSession.reference != nil {
+                    Section {
+                        Toggle("Show remembered shape", isOn: $controller.previewReference)
+                        Button("Start over") { controller.reset(); dismiss() }
+                    }
+                } else if controller.canReset {
+                    Button("Restart camera") { controller.reset(); dismiss() }
+                }
+            }
+            .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -181,63 +200,6 @@ private struct CameraView: UIViewRepresentable {
 
         private func box(_ a: CGPoint, _ b: CGPoint) -> CGRect {
             CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
-        }
-    }
-}
-
-private struct AssistantControls: View {
-    @ObservedObject var assistant: AssistantCoordinator
-    @State private var showsConnection = false
-    @State private var address = UserDefaults.standard.string(forKey: "lastMacAddress") ?? "http://"
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(assistant.message).font(.caption).foregroundStyle(.secondary)
-            if let semanticMessage = assistant.semanticMessage {
-                Text(semanticMessage).font(.caption).foregroundStyle(.secondary)
-            }
-            Button("Mac assistance", systemImage: "laptopcomputer") { showsConnection = true }
-                .font(.subheadline)
-        }
-        .sheet(isPresented: $showsConnection) {
-            NavigationStack {
-                Form {
-                    Section("Nearby Mac") {
-                        TextField("http://your-mac.local:8080", text: $address)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                        Text("When connected, sampled camera images go to this nearby Mac for object tracking. Keep both devices on the same local network. When your Mac server has Astra enabled, selected image crops are also sent to OpenAI.")
-                            .font(.footnote)
-                        Button(assistant.connected ? "Reconnect" : "Connect") {
-                            if assistant.connect(address: address) {
-                                UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "lastMacAddress")
-                                showsConnection = false
-                            }
-                        }
-                        if assistant.connected {
-                            Button("Disconnect") { assistant.disconnect(); showsConnection = false }
-                        }
-                        Text(assistant.message).font(.caption)
-                    }
-                }
-                .navigationTitle("Mac assistance")
-                .toolbar { Button("Done") { showsConnection = false } }
-            }
-            .presentationDetents([.medium, .large])
-        }
-    }
-}
-
-private struct ReferenceStatus: View {
-    @ObservedObject var session: SessionCoordinator
-    let screenTrackVisible: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(screenTrackVisible ? (session.state == .absent ? "Object found · checking its position." : "Moved · following object in view; depth uncertain.") : session.message).font(.subheadline.weight(.medium)).foregroundStyle(.mint)
-            if session.reference != nil {
-                Text("Captured depth shape · original reference retained")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
         }
     }
 }

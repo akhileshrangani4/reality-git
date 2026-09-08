@@ -6,13 +6,13 @@ struct AssistantClient: Sendable {
     func submit(_ frame: FrameRequest) async throws -> DetectionReply {
         var request = URLRequest(url: endpoint.appendingPathComponent("observe"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 3
+        request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(frame)
         guard request.httpBody!.count <= 4_000_000 else { throw ClientError.invalidResponse }
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 3
-        configuration.timeoutIntervalForResource = 3
+        configuration.timeoutIntervalForRequest = 25
+        configuration.timeoutIntervalForResource = 25
         configuration.urlCache = nil
         let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }

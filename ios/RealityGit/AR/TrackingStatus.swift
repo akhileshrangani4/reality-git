@@ -22,7 +22,7 @@ enum TrackingStatus: Equatable {
         case .unsupported: "LiDAR is required"
         case .scanning: "Look around the room"
         case .waitingForDepth: "Finding depth"
-        case .ready: "Marker placed"
+        case .ready: "Ready"
         case .limited: "Finding our place"
         case .interrupted: "Camera interrupted"
         case .paused: "Scan paused"
@@ -39,19 +39,19 @@ enum TrackingStatus: Equatable {
         case .unsupported:
             "This prototype needs a LiDAR-equipped iPhone, such as iPhone 15 Pro."
         case .scanning:
-            "Move your phone slowly. A small mint marker will appear one meter in front of you."
+            "Move your phone slowly to find its place."
         case .waitingForDepth:
             "Point toward a well-lit surface while the depth camera gets ready."
         case .ready:
-            "Walk around the mint marker. It should stay in the same place. Object selection comes next."
+            "Tap an object to remember it."
         case .limited(let reason):
             reason
         case .interrupted:
-            "Return to the camera and look around the same area to recover the marker."
+            "Return to the camera and look around the same area to recover tracking."
         case .paused:
             "Return to the app to continue scanning."
         case .failed(let message):
-            "The scan could not continue. Place a new marker to restart. \(message)"
+            "The scan could not continue. Restart the camera in Settings. \(message)"
         }
     }
 }

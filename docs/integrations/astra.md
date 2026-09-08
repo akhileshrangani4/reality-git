@@ -1,21 +1,31 @@
-# Astra integration grounding
+# Astra perception
 
-Verified September 8, 2026 against official OpenAI documentation. Live text access and the image-label integration are implemented; candidate comparison is implemented, reviewed and running on the Mac; live reacquisition accuracy remains pending.
+## Active flow
 
-## Verified provider contract
+`Routes.configure` uses `AstraWorker` by default. One full-frame Astra observation replaces the earlier Mac-Vision proposal, label, comparison and retry chain.
 
-- Model identifier: `gpt-6-astra`. Supports image input and structured outputs. `reasoning.effort` supports `low`, `medium`, `high`, `xhigh`, and `max`. Start with `low` for periodic identity comparisons; measure actual latency. [Model documentation](https://developers.openai.com/api/docs/models/gpt-6-astra).
-- Use the Responses API. Image inputs can be `input_image` content with a base64 JPEG data URL; pair reference and candidate with an `input_text` comparison request. Keep metric geometry out of the model decision. [Images and vision](https://developers.openai.com/api/docs/guides/images-vision).
-- Request a strict JSON schema through `text.format` with `type: json_schema`. Parse the response's output text, handle refusals and incomplete responses, and validate all application fields. Schema conformance does not establish identity correctness. [Structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+1. A tap or drawn box and its exact camera frame go to Astra.
+2. Astra returns a short label, identity confidence, normalized top-left bounding box and visible silhouette (or no match).
+3. The server keeps the first confident reference crop immutable. Subsequent calls compare that crop against the full current image and locate the same object anywhere in it.
+4. The phone samples LiDAR within the model outline. It uses only measured depth and calibration for world geometry. The saved depth surface prepares the native red/green splats once.
+5. Between calls, a bounded local Vision sequence advances Astra's pixels. It does not select, identify or independently reacquire objects. An uncertain model response revokes local continuity. Astra-confirmed source depth also directly establishes movement/restoration if no newer spatial evidence contradicts it; a failed Apple advance cannot veto the model snapshot.
 
-## Implemented application contract
+The Responses request uses `gpt-6-astra`, `reasoning.effort=low`, `store=false`, image inputs and a strict JSON schema. All output fields are validated, including numeric types, finite/in-bounds coordinates, silhouette area, incomplete responses and refusals. Confidence below 0.8 is treated as unknown. Geometry is measured on the phone; model coordinates are image coordinates only.
 
-The server labels the selected reference crop asynchronously and returns an optional label to the phone. The user reports receiving a label, but tracking remained lost; labeling alone did not solve reacquisition. Candidate comparison is now implemented separately: immutable reference crop versus a continuously tracked candidate, returning same/different/uncertain plus confidence. Authorization requires the same selection and continuous candidate ID, then a successful current-frame Vision advance; a model answer never supplies geometry.
+## Latency and lifecycle
 
-One provider request runs at a time. Candidate comparisons start no more often than every five seconds. An uncertain, low-confidence, or failed comparison retains a fresh candidate crop and retries with 5/10/20/30-second bounded backoff while continuity remains valid. A different-object verdict retires that candidate and temporarily excludes its region. Local Vision, Mac Vision and rendering continue during failure or delay. Actual account limits and round-trip latency have not been measured.
+There is one active request and no five-second comparison gate or 5/10/20/30-second candidate backoff. The provider request timeout is 20 seconds; phone transport allows 25 seconds. The active job pins its source image/depth for up to 30 seconds. Later samples cannot evict it. Fresh local advances provide live geometry. When advancement fails, green can mark Astra’s last measured world position for up to 10 seconds from its source timestamp, with a “last seen” status. Old model image boxes are never directly drawn on a new frame, and old snapshots cannot rewind newer physical observations or confirmed absence.
 
-## Access and validation still required
+New selections cancel/retire old results. Duplicate or stale requests cannot replace the immutable reference. Local authority expires after 10 seconds from Astra's confirmed source. Reference geometry survives local tracking loss and interruption until Start over.
 
-The user supplied a local ignored environment file. A live Responses request to `gpt-6-astra` completed and returned the requested text on September 8. The running Mac service also returned reference labels and real two-image comparison verdicts including `same`, `different`, and `uncertain`. Credentials were not printed or committed. Server startup loads the key into `OPENAI_API_KEY`; never put it in the iOS app or git. These calls establish live integration, not semantic accuracy or reliable phone reacquisition.
+## Validation
 
-Remaining checks: evaluate lookalikes and occlusions against known outcomes, measure response latency, and validate sustained phone recovery. Physical logs show that a model match can still be followed by low-confidence tracking or missing depth; neither the label nor the match alone produces a current world position. Mocked adapter tests cannot complete this milestone.
+Automated tests cover tap selection without Apple segmentation, whole-frame reacquisition without a candidate, uncertain initial retries, immutable references, old-selection isolation, bounded provider concurrency, invalid payloads, exact-source retention and sampled depth without shape-signature/background-ring gates.
+
+A live two-call smoke test on a synthetic marked object passed on September 8, 2026: initial selection ~5.3 s and moved-object reacquisition ~3.9 s. This verifies provider/schema integration and image coordinates, not physical tracking accuracy. Run it explicitly with `OPENAI_API_KEY` and `RUN_ASTRA_LIVE=1`, using `swift test --package-path server --filter AstraLiveTests`.
+
+The earlier `VisionWorker`, label-only and candidate-comparison adapters remain as legacy comparison/test fixtures. They are not used by the app's production route.
+
+## Provider grounding
+
+Existing verified contract: [Astra model](https://developers.openai.com/api/docs/models/gpt-6-astra), [image inputs](https://developers.openai.com/api/docs/guides/images-vision), [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs). The local ignored key is loaded into the server environment and is never put in the phone app or committed.

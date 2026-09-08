@@ -2,6 +2,33 @@ import XCTest
 @testable import RealityGitCore
 
 final class DiffReducerTests: XCTestCase {
+    func testAstraSnapshotEstablishesMovementAndRestorationDespiteLocalLoss() {
+        var reducer = DiffReducer(referencePosition: .zero)
+        // Newer local misses are not newer physical observations of the object.
+        reducer.observe(position: nil, identityConfirmed: false, visibility: .unknown, time: 6, frameID: 1)
+        XCTAssertTrue(reducer.observeAstra(position: SIMD3(0.3, 0, 0), time: 2))
+        XCTAssertEqual(reducer.state, .moved)
+        XCTAssertFalse(reducer.observeAstra(position: .zero, time: 2), "Do not replay a source")
+        XCTAssertTrue(reducer.observeAstra(position: .zero, time: 7))
+        XCTAssertEqual(reducer.state, .unchanged)
+    }
+
+    func testDelayedAstraCannotRewindNewerMeasuredPositionOrConfirmedAbsence() {
+        var reducer = DiffReducer(referencePosition: .zero)
+        reducer.observe(position: .zero, identityConfirmed: true, visibility: .visibleOccupied, time: 5, frameID: 1)
+        XCTAssertFalse(reducer.observeAstra(position: SIMD3(0.3, 0, 0), time: 4))
+        XCTAssertEqual(reducer.state, .unchanged)
+        for id in 2...4 {
+            reducer.observe(position: nil, identityConfirmed: false, visibility: .visibleEmpty,
+                time: 5 + Double(id) * 0.5, frameID: UInt64(id))
+        }
+        XCTAssertEqual(reducer.state, .absent)
+        XCTAssertFalse(reducer.observeAstra(position: .zero, time: 6))
+        XCTAssertEqual(reducer.state, .absent)
+        XCTAssertTrue(reducer.observeAstra(position: .zero, time: 8))
+        XCTAssertEqual(reducer.state, .unchanged)
+    }
+
     func testMoveAndRestoreRequireIndependentFramesAndHalfSecond() {
         var diff = DiffReducer(referencePosition: .zero)
         diff.observe(position: SIMD3(0.2, 0, 0), identityConfirmed: true, visibility: .visibleOccupied, time: 1, frameID: 1)

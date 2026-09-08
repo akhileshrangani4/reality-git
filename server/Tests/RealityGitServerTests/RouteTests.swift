@@ -8,6 +8,26 @@ import UniformTypeIdentifiers
 @testable import RealityGitServer
 
 final class RouteTests: XCTestCase {
+    func testAstraRouteAcceptsTapAndReturnsModelOutlineWithoutVisionInitialization() throws {
+        let worker = AstraWorker(validateImages: false, provider: { request, reference in
+            XCTAssertEqual(request.seedPoint, [0.4, 0.5])
+            XCTAssertNil(reference)
+            return .init(label: "mug", confidence: 0.95, rect: [0.2, 0.3, 0.3, 0.4],
+                outline: [[0.2, 0.3], [0.5, 0.3], [0.5, 0.7], [0.2, 0.7]])
+        })
+        let app = Application(.testing)
+        defer { app.shutdown() }
+        try configure(app, astra: worker)
+        let frame = FrameRequest(key: testKey(), jpeg: Data([1]), isReference: true, seedPoint: [0.4, 0.5])
+        try app.test(.POST, "observe", beforeRequest: { try $0.content.encode(frame) }) { response in
+            XCTAssertEqual(response.status, .ok)
+            let reply = try response.content.decode(DetectionReply.self)
+            XCTAssertEqual(reply.status, .identityConfirmed)
+            XCTAssertEqual(reply.semanticLabel, "mug")
+            XCTAssertEqual(reply.outline?.count, 4)
+        }
+    }
+
     func testHealthAndExactKeyEcho() throws {
         let key = testKey(frame: 42)
         let worker = VisionWorker(validateImageMetadata: false, localizer: { request, _ in

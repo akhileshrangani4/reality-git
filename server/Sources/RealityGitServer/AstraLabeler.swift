@@ -46,11 +46,11 @@ enum AstraLabeler {
         return try parseComparison(await send(body))
     }
 
-    private static func send(_ body: [String: Any]) async throws -> Data {
+    static func send(_ body: [String: Any]) async throws -> Data {
         guard let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !key.isEmpty else { throw Failure.unavailable }
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = 20
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -79,7 +79,7 @@ enum AstraLabeler {
         return clean
     }
 
-    private static func outputObject(_ data: Data) throws -> [String: Any] {
+    static func outputObject(_ data: Data) throws -> [String: Any] {
         guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               response["status"] as? String == "completed",
               let output = response["output"] as? [[String: Any]] else { throw Failure.invalidResponse }

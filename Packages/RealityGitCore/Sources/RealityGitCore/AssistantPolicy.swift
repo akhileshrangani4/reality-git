@@ -27,9 +27,9 @@ public struct SourceFrameBuffer<Value> {
 
 public enum AssistantPolicy {
     public static func validReply(_ reply: DetectionReply, sent: ObservationKey, now: Double,
-                                  lastAcceptedTime: Double, sourceExists: Bool) -> Bool {
+                                  lastAcceptedTime: Double, sourceExists: Bool, maxAge: Double = 5) -> Bool {
         guard reply.key == sent, sourceExists, now >= sent.captureTime,
-              now - sent.captureTime <= 5, sent.captureTime > lastAcceptedTime,
+              now - sent.captureTime <= maxAge, sent.captureTime > lastAcceptedTime,
               reply.confidence.isFinite, (0...1).contains(reply.confidence) else { return false }
         if let rect = reply.rect {
             guard rect.count == 4, rect.allSatisfy(\.isFinite), rect[0] >= 0, rect[1] >= 0,
