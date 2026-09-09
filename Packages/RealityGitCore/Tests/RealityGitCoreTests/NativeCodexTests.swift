@@ -35,6 +35,16 @@ private actor ScanRecorder {
             outline: [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6], [0.1, 0.6]])
     }
 }
+private actor ReentryRecorder {
+    var references: [FrameRequest?] = []
+    func observe(_ frame: FrameRequest, _ reference: FrameRequest?) throws -> AstraPerception.Observation {
+        references.append(reference)
+        if frame.key.frameID == 3 { throw NativeCodexError.unavailable }
+        if frame.key.frameID == 2 { return .init(label: "not visible", confidence: 0.99, rect: nil, outline: []) }
+        return .init(label: "same marked box", confidence: 0.99, rect: [0.1, 0.2, 0.3, 0.4],
+            outline: [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6], [0.1, 0.6]])
+    }
+}
 private actor FakeCodex: CodexTransport {
     let clock: TestClock
     var requests: [URLRequest] = []
@@ -86,6 +96,32 @@ private actor FakeCodex: CodexTransport {
 }
 
 final class NativeCodexTests: XCTestCase {
+    @MainActor
+    func testOffscreenNetworkFailureAndLongGapKeepTheOriginalObjectReference() async throws {
+        let recorder = ReentryRecorder()
+        let scanner = NativeScanSession(validateImages: false) { frame, reference in try await recorder.observe(frame, reference) }
+        let session = UUID(), object = UUID()
+        func frame(_ id: UInt64, time: Double) -> FrameRequest {
+            FrameRequest(key: .init(sessionID: session, objectID: object, frameID: id, captureTime: time),
+                jpeg: Data([UInt8(id)]), isReference: id == 1, seedPoint: id == 1 ? [0.2, 0.3] : nil)
+        }
+        let original = frame(1, time: 1)
+        let selected = try await scanner.observe(original)
+        let hidden = try await scanner.observe(frame(2, time: 10))
+        do { _ = try await scanner.observe(frame(3, time: 20)); XCTFail("Expected network failure") }
+        catch { XCTAssertEqual(error as? NativeCodexError, .unavailable) }
+        let returned = try await scanner.observe(frame(4, time: 120))
+        XCTAssertEqual(selected.status, .identityConfirmed)
+        XCTAssertEqual(hidden.status, .notFound)
+        XCTAssertEqual(returned.status, .tracked)
+        let references = await recorder.references
+        XCTAssertNil(references[0])
+        for reference in references.dropFirst() {
+            XCTAssertEqual(reference?.key, original.key)
+            XCTAssertEqual(reference?.jpeg, original.jpeg)
+        }
+    }
+
     @MainActor
     func testCachedReferenceBytesAreStableAndReplacedForNewReference() async throws {
         let (client, _, transport, _) = try await signedIn()

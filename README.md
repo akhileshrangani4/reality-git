@@ -15,6 +15,8 @@ Sign in with ChatGPT on the iPhone, choose an image model, then tap an object or
 
 The camera has one status indicator and Settings. Settings uses native SwiftUI forms, navigation, system colors, SF Symbols, Dynamic Type, and Liquid Glass controls. Choose a model under **Settings → Model**. Changing models starts a new scan.
 
+Moving the camera or leaving the frame preserves the same object's identity, name and original red reference. Fresh surfaces are projected into the current camera view; when visibility is lost, Astra searches for that same individual using its original reference image. Returning it resumes tracking instead of starting another capture. Reconnecting to the same model also preserves the scan.
+
 ## Run and connect
 
 Open **Settings → Sign in with ChatGPT**, copy the one-time code and complete sign-in on OpenAI's page. Return to the app, choose your model and tap **Done**. Each user uses their own Codex allowance. See [native iPhone setup and implementation](docs/native-codex.md). Internet access is required; the model runs in OpenAI's cloud.

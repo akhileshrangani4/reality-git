@@ -64,6 +64,7 @@ final class ARSessionController: NSObject, ObservableObject {
         arView.session.delegateQueue = .main
         arView.session.delegate = self
         diffRenderer.prepare(in: arView)
+        assistant.onReferenceConfirmed = { [weak self] evidence in self?.remember(evidence) }
     }
 
     func start() async {
@@ -120,8 +121,8 @@ final class ARSessionController: NSObject, ObservableObject {
         #if DEBUG
         print("AR explicit reset")
         #endif
-        guard wantsRunning, let configuration else { return }
         invalidateSelection()
+        guard wantsRunning, let configuration else { return }
         hasDepth = false
         status = .scanning
         isRunning = true
@@ -165,8 +166,8 @@ final class ARSessionController: NSObject, ObservableObject {
             if !overlayIsFresh(in: frame) {
                 selectionRect = nil
                 selectedPosition = nil
-            } else if let imageRect {
-                selectionRect = screenRect(imageRect, frame: frame)
+            } else {
+                selectionRect = currentScreenRect(in: frame)
             }
             let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 1.0 / 30.0
             let assistantDue = assistant.wantsSample(at: frame.timestamp)
@@ -191,7 +192,7 @@ final class ARSessionController: NSObject, ObservableObject {
             reliable: next.isReady, time: frame.timestamp, reduceMotion: reduceMotion,
             provisional: overlayIsFresh(in: frame) ? provisionalCapture : nil)
         let confirmedReply = assistant.evidence.map { $0.0.status == .tracked || $0.0.status == .identityConfirmed } ?? false
-        let capturing = objectSession.reference == nil && (assistant.isThinking || (workerBusy && confirmedReply))
+        let capturing = objectSession.reference == nil && !assistant.hasRememberedObject && (assistant.isThinking || (workerBusy && confirmedReply))
         let nextStage: CaptureStage = !next.isReady || !hasSelection || !assistant.connected ? .idle
             : (diffRenderer.isRevealing ? .forming : (capturing ? .scanning : .idle))
         if captureStage != nextStage { captureStage = nextStage }
@@ -232,6 +233,10 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func overlayIsFresh(in frame: ARFrame) -> Bool {
+        if let surface = objectSession.currentCapture ?? provisionalCapture {
+            // World-space geometry is reprojected for this camera pose, not pasted at an old pixel box.
+            return frame.timestamp >= surface.timestamp && frame.timestamp - surface.timestamp <= 0.25
+        }
         guard let pose = resultCameraPose else { return false }
         let current = frame.camera.transform
         let translation = simd_distance(SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z),
@@ -249,12 +254,44 @@ final class ARSessionController: NSObject, ObservableObject {
             width: normalized.width * arView.bounds.width, height: normalized.height * arView.bounds.height)
     }
 
+    private func currentScreenRect(in frame: ARFrame) -> CGRect? {
+        if let capture = objectSession.currentCapture ?? provisionalCapture {
+            let rectangle = SurfaceProjection.rectangle(points: capture.points.map { capture.position + $0.position },
+                cameraToWorld: frame.camera.transform, intrinsics: frame.camera.intrinsics,
+                imageWidth: CVPixelBufferGetWidth(frame.capturedImage), imageHeight: CVPixelBufferGetHeight(frame.capturedImage))
+            return rectangle.map { screenRect($0, frame: frame) }
+        }
+        return imageRect.map { screenRect($0, frame: frame) }
+    }
+
+    private func remember(_ evidence: MacTrackingRecovery) {
+        guard hasSelection, objectSession.reference == nil,
+              let outline = evidence.reply.outline, let rect = evidence.reply.rect,
+              AstraGeometry.validOutline(outline, rect: rect) else { return }
+        let key = objectSession.key(for: evidence.source)
+        Task {
+            let capture = await Task.detached(priority: .userInitiated) {
+                CaptureGeometry.measure(evidence.source, polygon: outline.map { CGPoint(x: $0[0], y: $0[1]) })
+            }.value
+            // Local camera interruptions may change trackingGeneration. Only an actual object
+            // reset invalidates this source; reliable rendering is gated separately.
+            guard assistant.referenceEvidence?.reply.key == evidence.reply.key, let capture else { return }
+            objectSession.captureReference(capture, key: key)
+        }
+    }
+
     private func beginSelection(_ selection: ObjectSelection, frame: ARFrame) {
         guard let sample = FrameSample(frame: frame) else {
             selectionMessage = "Wait for depth, then select the object again."
             return
         }
-        if objectSession.reference == nil {
+        beginSelection(selection, sample: sample)
+    }
+
+    // Operates on the owned source so camera interruption cannot replace the selected frame.
+    func beginSelection(_ selection: ObjectSelection, sample: FrameSample) {
+        let preserveReference = objectSession.reference != nil || assistant.hasRememberedObject
+        if !preserveReference {
             assistant.resetSelection()
             objectSession.reset()
             diffRenderer.reset()
@@ -275,7 +312,7 @@ final class ARSessionController: NSObject, ObservableObject {
         selectionRect = nil
         selectedPosition = nil
         selectionMessage = "Finding the selected object…"
-        assistant.select(sample, selection: selection, preserveReference: objectSession.reference != nil)
+        assistant.select(sample, selection: selection, preserveReference: preserveReference)
         if workerBusy {
             // Keep only the newest selection, with the exact image it refers to.
             pendingSelection = (sample, selection)
@@ -350,11 +387,13 @@ final class ARSessionController: NSObject, ObservableObject {
         workerBusy = true
         let generation = trackingGeneration
         let recovery = assistant.recoveryEvidence()
+        let remembered = assistant.referenceEvidence
         let key = objectSession.key(for: sample)
         let referencePosition = objectSession.reference?.position
         Task {
             let result = await tracker.process(sample, generation: generation, recovery: recovery,
-                referencePosition: referencePosition, selection: selection, onReference: { capture in
+                referencePosition: referencePosition, selection: remembered == nil ? selection : nil,
+                remembered: remembered, onReference: { capture in
                     guard generation == self.trackingGeneration, self.wantsRunning, self.isRunning, self.status.isReady else { return }
                     self.objectSession.captureReference(capture, key: key)
                 })
@@ -377,7 +416,7 @@ final class ARSessionController: NSObject, ObservableObject {
                 imageRect = result.rect
                 selectedPosition = overlayIsFresh(in: latest) ? result.worldPosition : nil
                 selectionMessage = result.message
-                selectionRect = overlayIsFresh(in: latest) ? result.rect.map { screenRect($0, frame: latest) } : nil
+                selectionRect = overlayIsFresh(in: latest) ? currentScreenRect(in: latest) : nil
                 #if DEBUG
                 if shouldLogInference {
                     print("Astra geometry overlay=\(selectionRect != nil) metric=\(selectedPosition != nil) reference=\(result.referenceCapture != nil)")

@@ -48,6 +48,7 @@ actor LocalObjectTracker {
     private var authorityTime: Double = -.infinity
     private var relativeOutline: [CGPoint] = []
     private var referenceCapture: ReferenceCapture?
+    private var attemptedReferenceKey: ObservationKey?
     private var astraCapture: ReferenceCapture?
     private var recentImages: [(time: Double, image: CVPixelBuffer)] = []
     private var continuity = TraceContinuityCache()
@@ -59,13 +60,28 @@ actor LocalObjectTracker {
 
     func process(_ sample: FrameSample, generation: UUID, recovery: MacTrackingRecovery? = nil,
                  referencePosition: SIMD3<Float>? = nil, selection: ObjectSelection? = nil,
+                 remembered: MacTrackingRecovery? = nil,
                  onReference: (@MainActor @Sendable (ReferenceCapture) -> Void)? = nil) async -> LocalTrackingResult {
         if self.generation != generation {
             self.generation = generation
             tracked = nil; relativeOutline = []; lastAstraKey = nil
-            referenceCapture = nil; recentImages = []; authorityTime = -.infinity
+            referenceCapture = nil; attemptedReferenceKey = nil; recentImages = []; authorityTime = -.infinity
             astraCapture = nil; provisional = false; continuity.reset()
             sequence = VNSequenceRequestHandler()
+        }
+        if referencePosition == nil, referenceCapture == nil, let remembered,
+           attemptedReferenceKey != remembered.reply.key,
+           remembered.reply.key.sessionID == remembered.sessionID,
+           remembered.reply.key.objectID == remembered.objectID,
+           remembered.reply.key.captureTime == remembered.source.timestamp,
+           remembered.reply.confidence >= 0.8,
+           remembered.reply.status == .identityConfirmed || remembered.reply.status == .tracked,
+           let values = remembered.reply.rect, let outline = remembered.reply.outline,
+           AstraGeometry.validOutline(outline, rect: values) {
+            // Immutable reference memory has no live-overlay TTL. It is not current evidence.
+            attemptedReferenceKey = remembered.reply.key
+            referenceCapture = CaptureGeometry.measure(remembered.source, polygon: outline.map { CGPoint(x: $0[0], y: $0[1]) })
+            if let capture = referenceCapture { await onReference?(capture) }
         }
         let image = sample.trackingImage()
         // Small image derivatives cover model latency without retaining full camera frames.
@@ -98,7 +114,7 @@ actor LocalObjectTracker {
                     let polygon = outline.map { CGPoint(x: $0[0], y: $0[1]) }
                     astraCapture = CaptureGeometry.measure(recovery.source, polygon: polygon)
                     // Publish the saved surface before any expensive reacquisition replay.
-                    if referencePosition == nil, referenceCapture == nil, let capture = astraCapture {
+                    if referencePosition == nil, referenceCapture == nil, remembered == nil, let capture = astraCapture {
                         referenceCapture = capture
                         await onReference?(capture)
                     }
@@ -146,18 +162,18 @@ actor LocalObjectTracker {
             }
             guard let tracked else { continuity.reset(); return missing("Astra is finding your object…") }
             let rect = ImageCoordinates.topLeftRect(visionRect: tracked.boundingBox)
-            guard LocalTrackingEvidence.validSelectionRectangle(rect) != nil else {
+            guard let visibleRect = SurfaceProjection.visibleRectangle(rect) else {
                 self.tracked = nil; continuity.reset(); return missing("Finding your object…")
             }
             continuity.record(rect: rect, confidence: tracked.confidence, time: sample.timestamp)
             if provisional {
-                let capture = initialPreview ?? CaptureGeometry.preview(sample, selection: .rectangle(rect))?.0
-                return LocalTrackingResult(rect: rect, currentCapture: nil, confidence: tracked.confidence,
+                let capture = initialPreview ?? CaptureGeometry.preview(sample, selection: .rectangle(visibleRect))?.0
+                return LocalTrackingResult(rect: visibleRect, currentCapture: nil, confidence: tracked.confidence,
                     message: "Scanning your object…", provisionalCapture: capture)
             }
             let polygon = relativeOutline.map { CGPoint(x: rect.minX + $0.x * rect.width, y: rect.minY + $0.y * rect.height) }
             let geometry = CaptureGeometry.measure(sample, polygon: polygon)
-            return LocalTrackingResult(rect: rect, currentCapture: geometry, confidence: tracked.confidence,
+            return LocalTrackingResult(rect: visibleRect, currentCapture: geometry, confidence: tracked.confidence,
                 message: geometry == nil ? "Move a little closer" : "Following your object",
                 referenceCapture: referenceCapture, astraCapture: astraCapture,
                 astraSourceTime: lastAstraKey?.captureTime ?? -.infinity)

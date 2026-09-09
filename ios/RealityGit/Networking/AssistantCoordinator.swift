@@ -32,6 +32,9 @@ final class AssistantCoordinator: ObservableObject {
     private var lastSampleTime: Double = -.infinity
     private var lastAcceptedTime: Double = -.infinity
     private(set) var evidence: (DetectionReply, FrameSample)?
+    private(set) var referenceEvidence: MacTrackingRecovery?
+    var hasRememberedObject: Bool { referenceEvidence != nil }
+    var onReferenceConfirmed: (@MainActor (MacTrackingRecovery) -> Void)?
     private struct Job: Sendable {
         let key: ObservationKey
         let source: FrameSample
@@ -59,6 +62,11 @@ final class AssistantCoordinator: ObservableObject {
         return MacTrackingRecovery(reply: evidence.0, source: evidence.1, sessionID: sessionID, objectID: objectID)
     }
 
+    #if DEBUG
+    /// Fault injection for the opt-in on-device lifecycle check, followed by real model refresh.
+    func simulateConnectionLossForCheck() { connected = false }
+    #endif
+
     func restoreConnection() async {
         guard client == nil else { return }
         client = AssistantClient()
@@ -83,7 +91,6 @@ final class AssistantCoordinator: ObservableObject {
     }
 
     private func apply(_ account: CodexAccountStatus) {
-        let wasConnected = connected
         signedIn = account.signedIn; models = account.models
         let previous = modelID
         let preferred = modelID ?? UserDefaults.standard.string(forKey: "scanModelID")
@@ -92,7 +99,8 @@ final class AssistantCoordinator: ObservableObject {
         connected = signedIn && modelID != nil
         connectionMessage = signedIn && models.isEmpty ? "No image models with low effort are available on this account." : nil
         if signedIn { login = nil }
-        if previous != modelID || (!wasConnected && connected) { resetSelection() }
+        // Reconnecting to the same model must not erase the selected object's identity.
+        if previous != modelID { resetSelection() }
         if !connected { message = signedIn ? "Choose an available model" : "Sign in to start scanning" }
         else if selection == nil { message = "Tap an object to remember it" }
     }
@@ -176,7 +184,7 @@ final class AssistantCoordinator: ObservableObject {
     func resetSelection() {
         worker.invalidate()
         objectID = UUID(); selection = nil; referenceInitialized = false
-        evidence = nil; label = nil; semanticMessage = nil; isThinking = false
+        evidence = nil; referenceEvidence = nil; label = nil; semanticMessage = nil; isThinking = false
         lastSampleTime = -.infinity; lastAcceptedTime = -.infinity
         retryAfter = -.infinity; consecutiveFailures = 0
         message = connected ? "Tap an object to remember it" : "Sign in to start scanning"
@@ -239,10 +247,16 @@ final class AssistantCoordinator: ObservableObject {
             if reply.status == .identityConfirmed || reply.status == .tracked {
                 lastAcceptedTime = job.key.captureTime
                 referenceInitialized = true
-                label = reply.semanticLabel
+                if referenceEvidence == nil {
+                    let remembered = MacTrackingRecovery(reply: reply, source: job.source, sessionID: sessionID, objectID: objectID)
+                    referenceEvidence = remembered
+                    label = reply.semanticLabel
+                    // Save the original identity before any camera/worker visibility checks.
+                    onReferenceConfirmed?(remembered)
+                }
                 semanticMessage = label
                 message = "Following your object"
-            } else { message = referenceInitialized ? "Finding your object…" : "Keep the object in view" }
+            } else { message = referenceInitialized ? "Looking for \(label ?? "your object")…" : "Keep the object in view" }
             evidence = (reply, job.source)
             #if DEBUG
             print("Astra observation frame=\(job.key.frameID) status=\(reply.status) age=\(CACurrentMediaTime() - job.key.captureTime)s")

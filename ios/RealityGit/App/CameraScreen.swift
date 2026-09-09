@@ -76,7 +76,10 @@ private struct CaptureStatus: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var text: String {
-        if !controller.status.isReady { return controller.status.message }
+        if !controller.status.isReady {
+            if assistant.hasRememberedObject, controller.status == .scanning { return "Recovering camera position…" }
+            return controller.status.message
+        }
         if !assistant.connected { return assistant.message }
         if !controller.hasSelection { return "Tap an object, or draw around it." }
         if controller.captureStage == .scanning { return "Scanning…" }
@@ -87,7 +90,7 @@ private struct CaptureStatus: View {
             let lastSeen = session.observedPosition(now: controller.arView.session.currentFrame?.timestamp ?? .infinity)
             return session.current == nil && lastSeen != nil ? "Moved · last seen in green" : "Moved · red marks its place"
         }
-        if session.current == nil { return assistant.message }
+        if session.current == nil { return "Looking for \(assistant.label ?? "your object")…" }
         return "Remembered · try moving it"
     }
 
@@ -122,7 +125,6 @@ private struct CaptureStatus: View {
         .onChange(of: assistant.modelID) { old, new in
             if old != nil, old != new { controller.reset() }
         }
-        .onChange(of: assistant.connected) { _, _ in controller.reset() }
     }
 }
 
