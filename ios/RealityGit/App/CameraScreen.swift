@@ -12,7 +12,6 @@ struct CameraScreen: View {
     @StateObject private var controller = ARSessionController()
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsSettings = false
-    @State private var pendingConnection: String?
 
     var body: some View {
         ZStack {
@@ -53,11 +52,11 @@ struct CameraScreen: View {
         .sheet(isPresented: $showsSettings) {
             CaptureSettings(assistant: controller.assistant, previewReference: $controller.previewReference,
                 hasReference: controller.objectSession.reference != nil, canReset: controller.canReset,
-                initialLink: pendingConnection ?? "", reset: controller.reset)
-                .onDisappear { pendingConnection = nil }
+                reset: controller.reset)
         }
         .task {
             await controller.assistant.restoreConnection()
+            if !controller.assistant.signedIn { showsSettings = true }
             await controller.start()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -65,10 +64,6 @@ struct CameraScreen: View {
             else if phase == .background { controller.pause() }
         }
         .onDisappear { controller.pause() }
-        .onOpenURL { url in
-            pendingConnection = url.absoluteString
-            showsSettings = true
-        }
     }
 }
 
@@ -116,7 +111,7 @@ private struct CaptureStatus: View {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                 }.buttonStyle(.glassProminent).tint(AppPalette.control).foregroundStyle(.black)
             } else if !assistant.connected {
-                Button(assistant.connectionHost == nil ? "Connect to Codex" : "Open Settings") { showsSettings = true }
+                Button(assistant.signedIn ? "Open Settings" : "Sign in with ChatGPT") { showsSettings = true }
                     .buttonStyle(.glassProminent).tint(AppPalette.control).foregroundStyle(.black)
             }
         }

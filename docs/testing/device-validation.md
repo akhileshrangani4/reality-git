@@ -1,5 +1,20 @@
 # Device validation
 
+## Native iPhone Codex port — September 9, 2026
+
+- The iPhone now owns device-code sign-in, OAuth token exchange/renewal, Keychain storage, model discovery, immutable reference memory and direct Codex Responses requests. Mac pairing UI, pairing import code and local-network permissions were removed. The native connection does not run Codex CLI or an HTTP server.
+- Interactive sign-in completed on the iPhone using OpenAI's device page. The account remained signed in across app restarts and reinstalls; model requests returned HTTP 200 directly from `chatgpt.com`. Available image/low-effort models were Astra, Sol, Terra, Luna and GPT-5.5. No Mac OAuth credentials were copied into the phone.
+- The legacy companion process on port 8080 was stopped before live image tests. It remains stopped. Native requests identify the app as `reality_git_ios`; no identity-changing retry was required.
+- Live device testing exposed two actual wire differences from an ordinary Responses JSON envelope: the endpoint omitted Content-Type, and the terminal event had an empty output array. The reader now accepts a missing content type, collects completed assistant items and releases them only after the matching successful terminal event. Bounds and refusal/failure validation remain enforced. The metadata-only terminal format has a regression test.
+- First functional native run at 18:52:46 UTC: Astra selection 6.05 s and movement 5.59 s, both exactly matching the synthetic target rectangle (IoU 1.0). Luna selection 4.73 s matched the target, but its 4.71 s movement response selected only the inner marking (IoU approximately 0.057). The old displacement-only diagnostic incorrectly labeled that sample a pass; the updated diagnostic requires whole-target IoU ≥ 0.7. This is a perception-quality failure for that Luna sample, not a transport failure.
+- Final device run at 19:00:32 UTC confirmed Astra selection/movement again (5.79 s / 5.34 s, IoU 1.0 each). Luna repeated the partial-marking error; the tightened diagnostic correctly reports that frame and the combined run as failed. The [device result report](native-codex-device-results.json) preserves both successes and the failure. Sol, Terra and GPT-5.5 are available in the catalog but were not image-quality tested in this port.
+- Automated checks: 75 XCTest + 2 Swift Testing core checks pass, including 16 native connection/lifecycle tests. Legacy server regression: 38 tests, 2 opt-in live cases skipped, zero failures. Signed Debug and unsigned Release builds for physical iOS devices pass.
+- Actual iPhone screenshots verified the reduced native account/model controls in light and dark mode. Accessibility-size inspection found an overly narrow account status; the row now stacks vertically at accessibility sizes. The camera's white particles, app icon and existing rendering behavior are preserved.
+- The final signed build is installed on the iPhone 15 Pro, retains its native ChatGPT sign-in and has been returned to the normal camera screen. The final accessibility-size screenshot confirms the stacked account row reads correctly.
+- Synthetic image checks establish direct subscription access and source association, not sustained physical tracking, occlusion handling, world-anchor accuracy or complete 3D reconstruction.
+
+See [native connection setup and protocol](../native-codex.md). The older Mac-based checkpoints below are historical.
+
 ## Astra-led capture update — September 8, 2026
 
 - Replaced the production Mac-Vision candidate chain with full-frame Astra selection, silhouette and reacquisition, using `gpt-6-astra` at low effort throughout.

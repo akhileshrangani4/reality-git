@@ -1,5 +1,7 @@
 # Codex subscription integration
 
+Historical Mac implementation. The current iPhone uses the [native Swift connection](../native-codex.md) and no longer pairs with this server. The server remains for legacy regression tests.
+
 The phone talks to a paired personal Mac companion. The companion embeds a private `codex app-server --stdio` process and uses its owner's ChatGPT subscription access. This is not a phone-native Codex runtime or a public multi-user service.
 
 ## Protocol

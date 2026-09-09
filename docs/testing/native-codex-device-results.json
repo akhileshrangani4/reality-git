@@ -1,0 +1,67 @@
+{
+  "models" : [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5"
+  ],
+  "observations" : [
+    {
+      "frame" : 0,
+      "iou" : 1,
+      "model" : "gpt-6-astra",
+      "passed" : true,
+      "rect" : [
+        0.1875,
+        0.25,
+        0.28125,
+        0.5
+      ],
+      "seconds" : 5.785459041595459
+    },
+    {
+      "frame" : 1,
+      "iou" : 1,
+      "model" : "gpt-6-astra",
+      "passed" : true,
+      "rect" : [
+        0.4375,
+        0.25,
+        0.28125,
+        0.5
+      ],
+      "seconds" : 5.3377490043640137
+    },
+    {
+      "frame" : 0,
+      "iou" : 1,
+      "model" : "gpt-5.6-luna",
+      "passed" : true,
+      "rect" : [
+        0.1875,
+        0.25,
+        0.28125,
+        0.5
+      ],
+      "seconds" : 4.9793699979782104
+    },
+    {
+      "frame" : 1,
+      "iou" : 0.057244444444444494,
+      "model" : "gpt-5.6-luna",
+      "passed" : false,
+      "rect" : [
+        0.49199999999999999,
+        0.375,
+        0.070000000000000007,
+        0.115
+      ],
+      "seconds" : 7.7931720018386841
+    }
+  ],
+  "passed" : false,
+  "signedIn" : true,
+  "startedAt" : "2026-09-09T19:00:32Z",
+  "transport" : "native-ios-https"
+}

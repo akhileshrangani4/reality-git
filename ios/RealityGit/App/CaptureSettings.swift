@@ -6,82 +6,67 @@ struct CaptureSettings: View {
     @Binding var previewReference: Bool
     let hasReference: Bool
     let canReset: Bool
-    let initialLink: String
     let reset: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var link = ""
-    @State private var confirmsDisconnect = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var confirmsSignOut = false
 
     var body: some View {
         NavigationStack {
             Form {
-                if assistant.connectionHost == nil || !link.isEmpty {
+                if !assistant.signedIn {
                     Section {
                         VStack(alignment: .leading, spacing: 12) {
-                            Image(systemName: "macbook.and.iphone").font(.largeTitle).accessibilityHidden(true)
-                            Text("Connect to Codex").font(.title2.bold())
-                            Text("Scan with your ChatGPT plan.")
-                                .foregroundStyle(.secondary)
+                            Image(systemName: "viewfinder").font(.largeTitle).accessibilityHidden(true)
+                            Text("Scan with ChatGPT").font(.title2.bold())
+                            Text("Sign in once. Scan from your iPhone.").foregroundStyle(.secondary)
                         }.padding(.vertical, 12)
                     }.listRowBackground(Color.clear)
-                    Section {
-                        TextField("Connection link", text: $link, axis: .vertical)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .keyboardType(.URL).lineLimit(1...3).privacySensitive()
-                        Button {
-                            Task {
-                                if await assistant.connect(link: link) { link = ""; reset() }
-                            }
-                        } label: {
-                            HStack { Text("Connect"); Spacer(); if assistant.isConnecting { ProgressView() } }
-                        }
-                        .disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || assistant.isConnecting)
-                    } footer: {
-                        Text("Scan the code on your Mac with the iPhone Camera, or paste its connection link. Keep both devices on the same trusted Wi-Fi.")
-                    }
-                } else {
-                    Section {
-                        HStack {
-                            Text("ChatGPT")
-                            Spacer()
-                            Label(assistant.signedIn ? "Signed in" : "Sign in", systemImage: assistant.signedIn ? "checkmark.circle.fill" : "person.crop.circle")
-                                .foregroundStyle(.secondary)
-                        }.fixedSize(horizontal: false, vertical: true)
-                        if !assistant.signedIn {
-                            if let login = assistant.login {
-                                CodexLoginView(assistant: assistant, login: login)
-                            } else {
-                                Button {
-                                    Task { await assistant.beginLogin() }
-                                } label: {
-                                    HStack { Text("Sign in with ChatGPT"); Spacer(); if assistant.isConnecting { ProgressView() } }
-                                }.disabled(assistant.isConnecting)
-                            }
-                        }
-                    } header: { Text("Account") } footer: {
-                        Text("Scans use your Codex allowance. Your ChatGPT sign-in stays on your Mac.")
-                    }.id(assistant.signedIn)
+                }
+                Section {
                     if assistant.signedIn {
-                        Section {
-                            NavigationLink {
-                                ScanModelPicker(assistant: assistant, reset: reset)
-                            } label: {
-                                LabeledContent("Model", value: assistant.modelName)
-                            }
-                        }
-                    }
-                    Section("Companion") {
-                        LabeledContent("Mac", value: assistant.connectionHost ?? "")
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                            : AnyLayout(HStackLayout())
+                        layout {
+                            Text("ChatGPT")
+                            if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                            Label("Signed in", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+                        }.fixedSize(horizontal: false, vertical: true)
+                    } else if let login = assistant.login {
+                        CodexLoginView(assistant: assistant, login: login)
+                    } else {
                         Button {
-                            Task { await assistant.refreshAccount() }
+                            Task { await assistant.beginLogin() }
                         } label: {
-                            HStack { Text("Reconnect"); Spacer(); if assistant.isConnecting { ProgressView() } }
+                            HStack {
+                                Text("Sign in with ChatGPT")
+                                Spacer()
+                                if assistant.isConnecting { ProgressView() }
+                            }
                         }.disabled(assistant.isConnecting)
-                        Button("Disconnect this iPhone", role: .destructive) { confirmsDisconnect = true }
+                    }
+                } header: { Text("Account") } footer: {
+                    Text("Scans use your Codex allowance. Your sign-in is saved securely on this iPhone.")
+                }.id(assistant.signedIn)
+
+                if assistant.signedIn {
+                    Section {
+                        NavigationLink {
+                            ScanModelPicker(assistant: assistant, reset: reset)
+                        } label: {
+                            LabeledContent("Model", value: assistant.modelName)
+                        }
                     }
                 }
                 if let message = assistant.connectionMessage {
-                    Section { Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.secondary) }
+                    Section {
+                        Label(message, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
+                        if assistant.signedIn {
+                            Button("Try again") { Task { await assistant.refreshAccount() } }
+                                .disabled(assistant.isConnecting)
+                        }
+                    }
                 }
                 if hasReference || canReset {
                     Section("Scan") {
@@ -89,18 +74,23 @@ struct CaptureSettings: View {
                         Button("Start over") { reset(); dismiss() }
                     }
                 }
+                if assistant.signedIn {
+                    Section {
+                        Button("Sign out", role: .destructive) { confirmsSignOut = true }
+                    }
+                }
             }
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .confirmationDialog("Disconnect this iPhone?", isPresented: $confirmsDisconnect, titleVisibility: .visible) {
-                Button("Disconnect", role: .destructive) { if assistant.disconnect() { reset() } }
-            } message: { Text("Your Mac will stay signed in to ChatGPT. You can pair this iPhone again at any time.") }
+            .confirmationDialog("Sign out of ChatGPT?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
+                Button("Sign out", role: .destructive) {
+                    Task { if await assistant.disconnect() { reset() } }
+                }
+            } message: { Text("This removes your sign-in from this iPhone.") }
         }
         .tint(.primary)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .onAppear { link = initialLink }
-        .onChange(of: initialLink) { _, value in link = value }
     }
 }
 
@@ -150,41 +140,23 @@ private struct CodexLoginView: View {
     @ObservedObject var assistant: AssistantCoordinator
     let login: CodexLogin
     @State private var copied = false
-    @State private var expired = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(expired ? "Request a new sign-in code." : "Enter this code on the ChatGPT sign-in page.")
-                .foregroundStyle(.secondary)
-            if !expired {
-                Text(login.userCode).font(.title2.monospaced().weight(.semibold)).textSelection(.enabled)
-                    .privacySensitive().accessibilityLabel("Sign-in code, \(login.userCode)")
-                Button(copied ? "Code copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                    UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: login.userCode]],
-                        options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(600)])
-                    copied = true
-                }.buttonStyle(.bordered)
-                Link("Continue to ChatGPT", destination: login.verificationURL).buttonStyle(.borderedProminent)
-                    .tint(.primary).foregroundStyle(Color(uiColor: .systemBackground))
-                HStack { ProgressView(); Text("Waiting for sign-in…").font(.footnote).foregroundStyle(.secondary) }
-            }
-            Button(expired ? "Try again" : "Cancel sign-in", role: .cancel) {
-                Task {
-                    await assistant.cancelLogin()
-                    if expired { await assistant.beginLogin() }
-                }
-            }.disabled(assistant.isConnecting)
+            Text("Copy this code, then enter it on OpenAI’s sign-in page.").foregroundStyle(.secondary)
+            Text(login.userCode).font(.title2.monospaced().weight(.semibold)).textSelection(.enabled)
+                .privacySensitive().accessibilityLabel("Sign-in code, \(login.userCode)")
+            Button(copied ? "Code copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: login.userCode]],
+                    options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(900)])
+                copied = true
+            }.buttonStyle(.bordered)
+            Link("Continue to ChatGPT", destination: login.verificationURL).buttonStyle(.borderedProminent)
+                .tint(.primary).foregroundStyle(Color(uiColor: .systemBackground))
+            HStack { ProgressView(); Text("Waiting for sign-in…").font(.footnote).foregroundStyle(.secondary) }
+            Button("Cancel sign-in", role: .cancel) { Task { await assistant.cancelLogin() } }
         }
         .padding(.vertical, 8)
-        .task(id: login.loginID) {
-            expired = false; copied = false
-            let deadline = Date().addingTimeInterval(600)
-            while !Task.isCancelled, assistant.login?.loginID == login.loginID, Date() < deadline {
-                do { try await Task.sleep(for: .seconds(3)) } catch { return }
-                guard !Task.isCancelled else { return }
-                await assistant.refreshAccount()
-            }
-            if !Task.isCancelled, !assistant.signedIn { expired = true }
-        }
+        .onChange(of: login.loginID) { _, _ in copied = false }
     }
 }

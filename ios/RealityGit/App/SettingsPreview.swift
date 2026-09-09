@@ -12,7 +12,7 @@ struct SettingsPreview: View {
                 NavigationStack { ScanModelPicker(assistant: assistant, reset: {}) }.tint(.primary)
             } else {
                 CaptureSettings(assistant: assistant, previewReference: .constant(true), hasReference: false,
-                    canReset: false, initialLink: "", reset: {})
+                    canReset: false, reset: {})
             }
         }
         .preferredColorScheme(arguments.contains("--dark-preview") ? .dark : .light)

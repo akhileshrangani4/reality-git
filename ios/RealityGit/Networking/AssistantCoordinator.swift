@@ -9,9 +9,8 @@ import QuartzCore
 final class AssistantCoordinator: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var isThinking = false
-    @Published private(set) var message = "Connect to start scanning"
+    @Published private(set) var message = "Sign in to start scanning"
     @Published private(set) var connectionMessage: String?
-    @Published private(set) var connectionHost: String?
     @Published private(set) var signedIn = false
     @Published private(set) var isConnecting = false
     @Published private(set) var models: [ScanModel] = []
@@ -22,6 +21,7 @@ final class AssistantCoordinator: ObservableObject {
     @Published private(set) var label: String?
     private var client: AssistantClient?
     private var connectionRevision = UUID()
+    private var loginTask: Task<Void, Never>?
     private var retryAfter: Double = -.infinity
     private var consecutiveFailures = 0
     private var sessionID = UUID()
@@ -60,41 +60,9 @@ final class AssistantCoordinator: ObservableObject {
     }
 
     func restoreConnection() async {
-        guard client == nil, !isConnecting else { return }
-        do {
-            #if DEBUG
-            try CompanionCredentials.importIfRequested()
-            #endif
-            guard let connection = try CompanionCredentials.load() else { return }
-            client = AssistantClient(connection: connection)
-            connectionHost = connection.endpoint.host
-            await refreshAccount()
-        } catch { connectionMessage = "Unlock your iPhone to reconnect." }
-    }
-
-    @discardableResult
-    func connect(link: String) async -> Bool {
-        guard !isConnecting else { return false }
-        guard let connection = CompanionConnection(link: link) else {
-            connectionMessage = "Paste the connection link from Reality Git on your Mac."
-            return false
-        }
-        isConnecting = true; connectionMessage = nil
-        let revision = UUID(); connectionRevision = revision
-        defer { if connectionRevision == revision { isConnecting = false } }
-        let candidate = AssistantClient(connection: connection)
-        do {
-            let account = try await candidate.account()
-            guard revision == connectionRevision else { return false }
-            try CompanionCredentials.save(connection)
-            client = candidate; connectionHost = connection.endpoint.host
-            login = nil; resetSelection(); apply(account)
-            return true
-        } catch {
-            guard revision == connectionRevision else { return false }
-            connectionMessage = connectionError(error)
-            return false
-        }
+        guard client == nil else { return }
+        client = AssistantClient()
+        await refreshAccount()
     }
 
     func refreshAccount() async {
@@ -109,6 +77,7 @@ final class AssistantCoordinator: ObservableObject {
         } catch {
             guard revision == connectionRevision else { return }
             connected = false; connectionMessage = connectionError(error)
+            signedIn = (try? await client.auth.hasCredentials()) ?? false
             message = "Reconnect in Settings"
         }
     }
@@ -135,6 +104,7 @@ final class AssistantCoordinator: ObservableObject {
     }
 
     func beginLogin() async {
+        if client == nil { client = AssistantClient() }
         guard let client, !isConnecting else { return }
         isConnecting = true; connectionMessage = nil
         let revision = connectionRevision
@@ -143,40 +113,63 @@ final class AssistantCoordinator: ObservableObject {
             let value = try await client.login()
             guard revision == connectionRevision else { return }
             login = value
+            loginTask?.cancel()
+            loginTask = Task { [weak self] in
+                let deadline = Date().addingTimeInterval(900)
+                while !Task.isCancelled, let self, self.login?.loginID == value.loginID {
+                    do {
+                        if Date() >= deadline { throw NativeCodexError.loginExpired }
+                        if try await client.pollLogin() {
+                            guard self.connectionRevision == revision else { return }
+                            self.login = nil
+                            await self.refreshAccount()
+                            return
+                        }
+                    } catch {
+                        guard !Task.isCancelled, self.connectionRevision == revision else { return }
+                        self.connectionMessage = self.connectionError(error)
+                        if let failure = error as? NativeCodexError, failure != .unavailable && failure != .limited {
+                            await client.cancelLogin()
+                            self.login = nil
+                            return
+                        }
+                    }
+                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                }
+            }
         } catch {
             if revision == connectionRevision { connectionMessage = connectionError(error) }
         }
     }
 
     func cancelLogin() async {
-        guard let client, login != nil, !isConnecting else { return }
-        isConnecting = true
-        let revision = connectionRevision
-        defer { if revision == connectionRevision { isConnecting = false } }
-        do {
-            try await client.cancelLogin()
-            if revision == connectionRevision { login = nil; connectionMessage = nil }
-        } catch { if revision == connectionRevision { connectionMessage = connectionError(error) } }
+        loginTask?.cancel(); loginTask = nil
+        login = nil; connectionMessage = nil
+        await client?.cancelLogin()
     }
 
     @discardableResult
-    func disconnect() -> Bool {
-        do { try CompanionCredentials.remove() }
-        catch { connectionMessage = "Couldn't remove the connection. Try again."; return false }
-        connectionRevision = UUID(); client = nil; connected = false; signedIn = false
-        models = []; modelID = nil; connectionHost = nil; login = nil; isConnecting = false; connectionMessage = nil
+    func disconnect() async -> Bool {
+        connectionRevision = UUID()
+        loginTask?.cancel(); loginTask = nil
+        connected = false; signedIn = false; models = []; modelID = nil
+        login = nil; isConnecting = false; connectionMessage = nil
         resetSelection()
-        return true
+        do { try await client?.signOut(); return true }
+        catch { connectionMessage = "Unlock your iPhone and try signing out again."; return false }
     }
 
     private func connectionError(_ error: Error) -> String {
         switch error as? AssistantClient.ClientError {
-        case .pairing: return "This connection link has expired. Scan the code on your Mac again."
-        case .signedOut: return "Sign in to ChatGPT to continue."
+        case .signedOut: return "Sign in with ChatGPT to continue."
+        case .accessDenied: return "OpenAI didn't authorize this connection. Check that Codex is enabled for your account."
         case .modelUnavailable: return "Refresh models and choose an available one."
-        case .limited: return "Codex couldn't complete this scan. Check your usage in Codex and retry."
-        case .loginUnavailable: return "Sign in to Codex on your Mac, then tap Reconnect."
-        default: return "Can't reach Codex. Keep the companion running and both devices on the same Wi-Fi."
+        case .limited: return "Your Codex allowance is currently unavailable. Try again later."
+        case .loginUnavailable: return "Device sign-in isn't available for this account. Check your ChatGPT security settings."
+        case .loginExpired: return "Your sign-in code expired. Try again."
+        case .storage: return "Unlock your iPhone to access your sign-in."
+        case .invalidResponse: return "Codex returned an incomplete response. Try again."
+        default: return "Can't reach OpenAI. Check your internet connection and try again."
         }
     }
 
@@ -186,7 +179,7 @@ final class AssistantCoordinator: ObservableObject {
         evidence = nil; label = nil; semanticMessage = nil; isThinking = false
         lastSampleTime = -.infinity; lastAcceptedTime = -.infinity
         retryAfter = -.infinity; consecutiveFailures = 0
-        message = connected ? "Tap an object to remember it" : "Connect to start scanning"
+        message = connected ? "Tap an object to remember it" : "Sign in to start scanning"
     }
 
     func select(_ sample: FrameSample, selection: ObjectSelection, preserveReference: Bool) {
@@ -260,7 +253,7 @@ final class AssistantCoordinator: ObservableObject {
             message = "Scan interrupted · retrying shortly"
             connectionMessage = connectionError(error)
             switch error as? AssistantClient.ClientError {
-            case .pairing, .signedOut, .modelUnavailable:
+            case .signedOut, .accessDenied, .modelUnavailable:
                 connected = false; message = "Reconnect in Settings"
                 if case .signedOut = error as? AssistantClient.ClientError { signedIn = false }
             case .limited: retryAfter = CACurrentMediaTime() + 30; message = "Codex is busy · retrying shortly"

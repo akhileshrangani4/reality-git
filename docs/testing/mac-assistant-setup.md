@@ -1,5 +1,7 @@
 # Codex companion setup
 
+Historical setup for the previous companion build. The current iPhone app no longer has pairing controls; use [native iPhone sign-in](../native-codex.md). These instructions remain for testing the legacy server.
+
 Install Codex CLI and sign in with ChatGPT. The integration was verified with Codex 0.153.4. It uses the documented app-server protocol; it does not reuse subscription credentials for ordinary API requests.
 
 ## Run
