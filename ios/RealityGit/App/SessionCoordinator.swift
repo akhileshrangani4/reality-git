@@ -49,16 +49,7 @@ final class SessionCoordinator: ObservableObject {
         }
         #endif
         guard key.sessionID == sessionID, key.objectID == objectID else { return }
-        if reference == nil, let capture = result.referenceCapture, capture.points.count >= 12,
-           capture.timestamp <= key.captureTime {
-            let captureKey = ObservationKey(sessionID: sessionID, objectID: objectID,
-                frameID: key.frameID, captureTime: capture.timestamp)
-            if let reference = ReferenceState(key: captureKey, position: capture.position, bounds: capture.bounds, points: capture.points) {
-                self.reference = reference
-                reconciler = Reconciler(referencePosition: reference.position, sessionID: sessionID, objectID: objectID)
-                reducer = DiffReducer(referencePosition: reference.position)
-            }
-        }
+        if let capture = result.referenceCapture { captureReference(capture, key: key) }
         if result.astraSourceTime > lastAstraSourceTime {
             lastAstraSourceTime = result.astraSourceTime
             observed = nil
@@ -95,6 +86,19 @@ final class SessionCoordinator: ObservableObject {
         case .moved: message = "Moved · red marks the remembered place, green follows the object."
         case .absent: message = "Checking returned object…"
         case .unchanged: message = "Remembered · move the object to compare."
+        }
+    }
+    func captureReference(_ capture: ReferenceCapture, key: ObservationKey) {
+        guard key.sessionID == sessionID, key.objectID == objectID else { return }
+        if reference == nil, capture.points.count >= 12,
+           capture.timestamp <= key.captureTime {
+            let captureKey = ObservationKey(sessionID: sessionID, objectID: objectID,
+                frameID: key.frameID, captureTime: capture.timestamp)
+            if let reference = ReferenceState(key: captureKey, position: capture.position, bounds: capture.bounds, points: capture.points) {
+                self.reference = reference
+                reconciler = Reconciler(referencePosition: reference.position, sessionID: sessionID, objectID: objectID)
+                reducer = DiffReducer(referencePosition: reference.position)
+            }
         }
     }
     func loseCurrent() {

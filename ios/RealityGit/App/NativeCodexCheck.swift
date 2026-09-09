@@ -16,6 +16,8 @@ struct NativeCodexCheck: View {
     }
 
     private func run() async {
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = false }
         let file = URL.documentsDirectory.appendingPathComponent("native-codex-check.json")
         try? FileManager.default.removeItem(at: file)
         var rows: [[String: Any]] = []
@@ -26,7 +28,8 @@ struct NativeCodexCheck: View {
             report["signedIn"] = account.signedIn
             report["models"] = account.models.map(\.id)
             guard account.signedIn, !account.models.isEmpty else { throw NativeCodexError.signedOut }
-            let selected = ["gpt-6-astra", "gpt-5.6-luna"].filter { wanted in account.models.contains { $0.id == wanted } }
+            let wantedModels = ProcessInfo.processInfo.arguments.contains("--astra-only") ? ["gpt-6-astra"] : ["gpt-6-astra", "gpt-5.6-luna"]
+            let selected = wantedModels.filter { wanted in account.models.contains { $0.id == wanted } }
             for model in selected.isEmpty ? [account.models[0].id] : selected {
                 let scanner = NativeScanSession { frame, reference in try await client.perceive(frame, reference: reference) }
                 let session = UUID(), object = UUID()

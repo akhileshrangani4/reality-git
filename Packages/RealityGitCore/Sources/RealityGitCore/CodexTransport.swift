@@ -112,18 +112,23 @@ struct CodexEventDecoder {
     }
 }
 
-struct CodexURLTransport: CodexTransport {
-    func send(_ request: URLRequest, limit: Int, eventStream: Bool) async throws -> CodexHTTPReply {
-        guard request.url?.scheme == "https", let host = request.url?.host,
-              ["auth.openai.com", "chatgpt.com"].contains(host) else { throw NativeCodexError.invalidResponse }
+final class CodexURLTransport: CodexTransport {
+    private let session: URLSession
+    init() {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil; config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
-        config.timeoutIntervalForRequest = request.timeoutInterval
-        config.timeoutIntervalForResource = request.timeoutInterval
-        let session = URLSession(configuration: config, delegate: CodexNoRedirects(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
+        config.timeoutIntervalForRequest = 25
+        config.timeoutIntervalForResource = 25
+        session = URLSession(configuration: config, delegate: CodexNoRedirects(), delegateQueue: nil)
+    }
+    deinit { session.invalidateAndCancel() }
+    func send(_ request: URLRequest, limit: Int, eventStream: Bool) async throws -> CodexHTTPReply {
+        guard request.url?.scheme == "https", let host = request.url?.host,
+              ["auth.openai.com", "chatgpt.com"].contains(host) else { throw NativeCodexError.invalidResponse }
         let (bytes, response) = try await session.bytes(for: request)
+        // Cancel just this stream after its terminal event; keep the TLS/HTTP connection pool warm.
+        defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse else { throw NativeCodexError.invalidResponse }
         #if DEBUG
         // Fixed endpoint paths and status only. Never log bodies, codes, tokens or headers.

@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import XCTest
 @testable import RealityGitCore
 
@@ -85,6 +86,34 @@ private actor FakeCodex: CodexTransport {
 }
 
 final class NativeCodexTests: XCTestCase {
+    @MainActor
+    func testCachedReferenceBytesAreStableAndReplacedForNewReference() async throws {
+        let (client, _, transport, _) = try await signedIn()
+        _ = try await client.account()
+        let session = UUID(), object = UUID(), context = CIContext()
+        func frame(_ number: UInt64, color: CIColor) throws -> FrameRequest {
+            let image = CIImage(color: color).cropped(to: CGRect(x: 0, y: 0, width: 32, height: 32))
+            let data = try XCTUnwrap(context.jpegRepresentation(of: image, colorSpace: CGColorSpaceCreateDeviceRGB()))
+            return FrameRequest(key: .init(sessionID: session, objectID: object, frameID: number, captureTime: Double(number)),
+                jpeg: data, seedRect: [0.1, 0.1, 0.8, 0.8], modelID: "gpt-6-astra")
+        }
+        let red = try frame(1, color: .red), blue = try frame(2, color: .blue)
+        _ = try await client.perceive(blue, reference: red)
+        _ = try await client.perceive(red, reference: red)
+        _ = try await client.perceive(red, reference: blue)
+        _ = try await client.perceive(red, reference: nil)
+        let requests = await transport.requests.filter { $0.url?.path == "/backend-api/codex/responses" }
+        let imageURLs = try requests.map { request -> [String] in
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody!) as? [String: Any])
+            let input = try XCTUnwrap(body["input"] as? [[String: Any]])
+            return input.flatMap { $0["content"] as? [[String: Any]] ?? [] }.compactMap { $0["image_url"] as? String }
+        }
+        XCTAssertEqual(imageURLs.map(\.count), [2, 2, 2, 1])
+        XCTAssertEqual(imageURLs[0][0], imageURLs[1][0])
+        XCTAssertNotEqual(imageURLs[1][0], imageURLs[2][0])
+        XCTAssertNotEqual(imageURLs[0][1], imageURLs[1][1], "Live frames are not cached as reference evidence")
+    }
+
     @MainActor
     private func signedIn() async throws -> (NativeCodexClient, MemoryCredentials, FakeCodex, TestClock) {
         let clock = TestClock(), store = MemoryCredentials()

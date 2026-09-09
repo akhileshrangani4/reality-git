@@ -17,7 +17,7 @@ public enum AstraPerception {
     }
     public typealias Provider = @Sendable (FrameRequest, FrameRequest?) async throws -> Observation
 
-    public static func body(_ frame: FrameRequest, reference: FrameRequest?) throws -> [String: Any] {
+    public static func body(_ frame: FrameRequest, reference: FrameRequest?, referenceImageURL: String? = nil) throws -> [String: Any] {
         let number: [String: Any] = ["type": "number", "minimum": 0, "maximum": 1]
         let pair: [String: Any] = ["type": "array", "items": number, "minItems": 2, "maxItems": 2]
         let schema: [String: Any] = ["type": "object", "properties": [
@@ -36,7 +36,8 @@ public enum AstraPerception {
         var images: [[String: Any]] = []
         if let reference {
             prompt += "\nImage 1 is the immutable reference crop. Image 2 is CURRENT. Find the SAME individual object anywhere in image 2, including after movement, rotation or a change of scale."
-            images.append(["type": "input_image", "image_url": "data:image/jpeg;base64," + (try crop(reference)).base64EncodedString(), "detail": "high"])
+            let imageURL = try referenceImageURL ?? ("data:image/jpeg;base64," + crop(reference).base64EncodedString())
+            images.append(["type": "input_image", "image_url": imageURL, "detail": "high"])
         } else if let point = frame.seedPoint {
             prompt += "\nThis is the first selection. The user tapped normalized point \(point). Select the whole physical object under that point, not just a patch."
         } else if let rect = frame.seedRect {
@@ -91,6 +92,8 @@ public enum AstraPerception {
         return result
     }
 
+    private static let imageContext = CIContext(options: [.cacheIntermediates: false])
+
     public static func crop(_ reference: FrameRequest) throws -> Data {
         guard let seed = reference.seedRect, AstraGeometry.rectangle(seed) != nil,
               let image = CIImage(data: reference.jpeg) else { throw Failure.invalidImage }
@@ -103,8 +106,7 @@ public enum AstraPerception {
         let cropped = image.cropped(to: bounds)
         let scale = min(1, 512 / max(bounds.width, bounds.height))
         let resized = cropped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let context = CIContext(options: [.cacheIntermediates: false])
-        guard let cg = context.createCGImage(resized, from: resized.extent) else { throw Failure.invalidImage }
+        guard let cg = imageContext.createCGImage(resized, from: resized.extent) else { throw Failure.invalidImage }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { throw Failure.invalidImage }
         CGImageDestinationAddImage(destination, cg, [kCGImagePropertyOrientation: 1, kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)

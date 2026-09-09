@@ -5,7 +5,9 @@ struct RealityGitApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--native-codex-check") {
+            if ProcessInfo.processInfo.arguments.contains("--capture-speed-check") {
+                CaptureSpeedCheck()
+            } else if ProcessInfo.processInfo.arguments.contains("--native-codex-check") {
                 NativeCodexCheck()
             } else if ProcessInfo.processInfo.arguments.contains("--capture-preview") {
                 CaptureEffectsPreview().ignoresSafeArea().preferredColorScheme(.dark)

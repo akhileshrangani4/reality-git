@@ -1,5 +1,8 @@
 import ARKit
 import CoreVideo
+import CoreImage
+import ImageIO
+import os
 import RealityGitCore
 import simd
 
@@ -14,6 +17,52 @@ final class FrameSample: @unchecked Sendable {
     let intrinsics: simd_float3x3
     let cameraToWorld: simd_float4x4
     let timestamp: TimeInterval
+    private nonisolated static let imageContext = CIContext(options: [.cacheIntermediates: false])
+    // CVPixelBuffer is not Sendable; this lock only publishes immutable derivatives.
+    private nonisolated let imageCache = OSAllocatedUnfairLock(uncheckedState: (tracking: Optional<CVPixelBuffer>.none, jpeg: Optional<Data>.none))
+
+    /// Immutable per-frame derivatives. Original RGB/depth and calibration remain untouched.
+    nonisolated func trackingImage() -> CVPixelBuffer {
+        imageCache.withLockUnchecked { cache in
+            if let image = cache.tracking { return image }
+            let width = CVPixelBufferGetWidth(image), height = CVPixelBufferGetHeight(image)
+            let scale = min(1, 960.0 / Double(max(width, height)))
+            guard scale < 1 else { return image }
+            var output: CVPixelBuffer?
+            guard CVPixelBufferCreate(kCFAllocatorDefault, Int(Double(width) * scale), Int(Double(height) * scale),
+                kCVPixelFormatType_32BGRA, [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &output) == kCVReturnSuccess,
+                let output else { return image }
+            Self.imageContext.render(CIImage(cvPixelBuffer: image).transformed(by: .init(scaleX: scale, y: scale)), to: output)
+            cache.tracking = output
+            return output
+        }
+    }
+
+    nonisolated func jpeg() throws -> Data {
+        try imageCache.withLockUnchecked { cache in
+            if let jpeg = cache.jpeg { return jpeg }
+            let source = CIImage(cvPixelBuffer: image)
+            let scale = min(1, 960 / max(source.extent.width, source.extent.height))
+            let resized = source.transformed(by: .init(scaleX: scale, y: scale))
+            guard let cgImage = Self.imageContext.createCGImage(resized, from: resized.extent) else { throw NativeCodexError.invalidResponse }
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { throw NativeCodexError.invalidResponse }
+            CGImageDestinationAddImage(destination, cgImage, [kCGImagePropertyOrientation: 1,
+                kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)
+            guard CGImageDestinationFinalize(destination) else { throw NativeCodexError.invalidResponse }
+            cache.jpeg = data as Data
+            return data as Data
+        }
+    }
+
+    #if DEBUG
+    init(image: CVPixelBuffer, depth: [Float], confidence: [UInt8], depthWidth: Int, depthHeight: Int,
+         intrinsics: simd_float3x3, cameraToWorld: simd_float4x4, timestamp: Double) {
+        self.image = image; self.depth = depth; self.confidence = confidence
+        self.depthWidth = depthWidth; self.depthHeight = depthHeight; self.intrinsics = intrinsics
+        self.cameraToWorld = cameraToWorld; self.timestamp = timestamp
+    }
+    #endif
 
     init?(frame: ARFrame) {
         guard let source = frame.sceneDepth,

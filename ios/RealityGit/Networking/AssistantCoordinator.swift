@@ -46,7 +46,7 @@ final class AssistantCoordinator: ObservableObject {
 
     nonisolated private static func perform(_ job: Job) async throws -> DetectionReply {
         let jpeg = try await Task.detached(priority: .userInitiated) {
-            try Self.encode(job.source, longEdge: 960)
+            try job.source.jpeg()
         }.value
         try Task.checkCancellation()
         let request = FrameRequest(key: job.key, jpeg: jpeg,
@@ -262,17 +262,4 @@ final class AssistantCoordinator: ObservableObject {
         }
     }
 
-    nonisolated private static func encode(_ sample: FrameSample, longEdge: Int) throws -> Data {
-        let image = CIImage(cvPixelBuffer: sample.image)
-        let scale = min(1, CGFloat(longEdge) / max(image.extent.width, image.extent.height))
-        let resized = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let context = CIContext(options: [.cacheIntermediates: false])
-        guard let cgImage = context.createCGImage(resized, from: resized.extent) else { throw AssistantClient.ClientError.invalidResponse }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { throw AssistantClient.ClientError.invalidResponse }
-        CGImageDestinationAddImage(destination, cgImage, [kCGImagePropertyOrientation: 1,
-            kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw AssistantClient.ClientError.invalidResponse }
-        return data as Data
-    }
 }

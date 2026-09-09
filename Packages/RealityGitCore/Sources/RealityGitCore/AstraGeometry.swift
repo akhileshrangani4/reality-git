@@ -49,12 +49,30 @@ public enum AstraGeometry {
         let ys = polygon.map { max(0, min(1, $0.y)) * Double(height) }
         let minX = Int(floor(xs.min()!)), maxX = min(width, Int(ceil(xs.max()!)))
         let minY = Int(floor(ys.min()!)), maxY = min(height, Int(ceil(ys.max()!)))
+        pixels.reserveCapacity((maxX - minX) * (maxY - minY))
+        depths.reserveCapacity((maxX - minX) * (maxY - minY))
         for y in minY..<maxY {
+            // Intersect the silhouette once per row, rather than walking all its edges
+            // again for every depth pixel. Preserve the same pixel-center inclusion rule.
+            let row = (Double(y) + 0.5) / Double(height)
+            var crossings: [Double] = []
+            var previous = polygon.count - 1
+            for index in polygon.indices {
+                let a = polygon[index], b = polygon[previous]
+                if (a.y > row) != (b.y > row) {
+                    crossings.append((b.x - a.x) * (row - a.y) / (b.y - a.y) + a.x)
+                }
+                previous = index
+            }
+            crossings.sort()
+            var crossing = 0, inside = crossings.count.isMultiple(of: 2) == false
             for x in minX..<maxX {
+                let column = (Double(x) + 0.5) / Double(width)
+                while crossing < crossings.count, crossings[crossing] <= column {
+                    inside.toggle(); crossing += 1
+                }
                 let i = y * width + x
-                guard confidence[i] >= 1, depth[i].isFinite, (0.1...8).contains(depth[i]),
-                      contains(CGPoint(x: (Double(x) + 0.5) / Double(width),
-                                       y: (Double(y) + 0.5) / Double(height)), polygon: polygon) else { continue }
+                guard inside, confidence[i] >= 1, depth[i].isFinite, (0.1...8).contains(depth[i]) else { continue }
                 pixels.append((x, y)); depths.append(depth[i])
             }
         }

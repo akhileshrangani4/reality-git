@@ -18,31 +18,78 @@ final class DiffRenderer {
     private var greenUsesBounds = false
     private var greenTimestamp: Double?
     private var referenceKey: ObservationKey?
+    private var provisionalTimestamp: Double?
+    private var prepared = false
+    private var attached = false
+    #if DEBUG
+    var visibleSavedSlots: Int { redCloud?.visibleSlots ?? 0 }
+    #endif
+
+    /// Allocate GPU resources before a tap; selections only replace their measured points.
+    func prepare(in view: ARView) {
+        if !prepared {
+            prepared = true
+            do {
+                let saved = try SplatCloud(points: [], position: .zero, tint: SIMD3(1, 0.15, 0.1),
+                    radius: 0.006, opacity: 0.25, capacity: ReferenceCapture.maximumPointCount)
+                redCloud = saved; red = saved.anchor
+                let current = try SplatCloud(points: [], position: .zero, tint: SIMD3(0.1, 1, 0.25),
+                    radius: 0.003, opacity: 0.045, capacity: ReferenceCapture.maximumPointCount)
+                greenCloud = current; green = current.anchor
+            } catch { print("Splat preallocation unavailable: \(error)") }
+        }
+        if !attached {
+            if let red { view.scene.addAnchor(red) }
+            if let green { view.scene.addAnchor(green) }
+            attached = true
+        }
+    }
     func hide() {
         red?.isEnabled = false
         green?.isEnabled = false
         captureStartTime = nil; lastUpdateTime = nil; redOpacity = 0; isRevealing = false
     }
     func reset() {
-        red?.removeFromParent(); green?.removeFromParent()
-        red = nil; green = nil; referenceKey = nil
-        redCloud = nil; captureStartTime = nil; lastUpdateTime = nil; redOpacity = 0; isRevealing = false
+        hide()
+        // AR reset removes its anchors. Reattach the cached resources on the next update.
+        red?.removeFromParent(); green?.removeFromParent(); attached = false
+        if redCloud == nil { red = nil }
+        if greenCloud == nil { green = nil }
+        referenceKey = nil; provisionalTimestamp = nil
         captureImpact = nil
-        greenCloud = nil; greenUsesBounds = false; greenTimestamp = nil
+        greenUsesBounds = false; greenTimestamp = nil
     }
     func update(in view: ARView, reference: ReferenceState?, current: ReferenceCapture?,
-                showRed: Bool, showGreen: Bool, reliable: Bool, time: TimeInterval, reduceMotion: Bool) {
-        guard let reference else { reset(); return }
+                showRed: Bool, showGreen: Bool, reliable: Bool, time: TimeInterval, reduceMotion: Bool,
+                provisional: ReferenceCapture? = nil) {
+        prepare(in: view)
         guard reliable else { hide(); return }
+        guard let reference else {
+            green?.isEnabled = false; isRevealing = false
+            guard let provisional, time >= provisional.timestamp, time - provisional.timestamp <= 0.5 else {
+                red?.isEnabled = false; captureImpact = nil; return
+            }
+            if provisionalTimestamp != provisional.timestamp {
+                redCloud?.update(points: provisional.points, position: provisional.position)
+                redCloud?.setPresentation(reveal: 1, opacityScale: 0.4, radiusScale: 0.75)
+                provisionalTimestamp = provisional.timestamp
+            }
+            red?.isEnabled = redCloud != nil
+            captureImpact = provisional.position
+            status = "Scanning surface…"
+            return
+        }
         if referenceKey != reference.captureKey {
-            reset(); referenceKey = reference.captureKey
+            reset(); prepare(in: view); referenceKey = reference.captureKey
             let impactOffset = reference.points.min { simd_length_squared($0.position) < simd_length_squared($1.position) }?.position ?? .zero
             captureImpact = reference.position + impactOffset
             do {
-                let cloud = try SplatCloud(points: reference.points, position: reference.position,
-                    tint: SIMD3(1, 0.15, 0.1), radius: 0.006, opacity: 0.25, revealOrigin: impactOffset)
+                let cloud = try redCloud ?? SplatCloud(points: [], position: .zero,
+                    tint: SIMD3(1, 0.15, 0.1), radius: 0.006, opacity: 0.25, capacity: ReferenceCapture.maximumPointCount, revealOrigin: impactOffset)
+                cloud.update(points: reference.points, position: reference.position, revealOrigin: impactOffset)
                 cloud.setPresentation(reveal: reduceMotion ? 1 : 0, opacityScale: 1)
                 redCloud = cloud; red = cloud.anchor
+                redOpacity = showRed ? 1 : 0.5
                 captureStartTime = reduceMotion ? nil : time
                 status = "Gaussian shape ready · \(reference.points.count) points"
                 print("Gaussian ghost ready: \(reference.points.count) captured surface points")
@@ -58,10 +105,10 @@ final class DiffRenderer {
             greenTimestamp = current.timestamp
         }
         let elapsed = captureStartTime.map { max(0, time - $0) } ?? .infinity
-        let reveal = reduceMotion ? 1 : Float(min(1, elapsed / 0.42))
+        let reveal = reduceMotion ? 1 : Float(min(1, elapsed / 0.12))
         isRevealing = reveal < 1
         // A brief completed-capture preview flows into the normal diff display.
-        let preview = reduceMotion ? 0 : Float(max(0, min(1, (0.8 - elapsed) / 0.22))) * 0.32
+        let preview = reduceMotion ? 0 : Float(max(0, min(1, (1.0 - elapsed) / 0.22))) * 0.5
         let targetOpacity: Float = showRed ? 1 : preview
         let delta = min(0.1, max(0, time - (lastUpdateTime ?? time)))
         lastUpdateTime = time
@@ -123,9 +170,20 @@ private final class SplatCloud {
     private let tint: SIMD3<Float>
     private let radius: Float
     private let opacity: Float
-    private let revealOrigin: SIMD3<Float>
+    private var revealOrigin: SIMD3<Float>
+    private var activeCount = 0
     private var revealOrder: [Float] = []
     private var lastPresentation: SIMD3<Float>?
+    #if DEBUG
+    var visibleSlots: Int {
+        var count = 0
+        buffer.withUnsafeBytes { bytes in
+            let values = bytes.bindMemory(to: Float.self)
+            count = (0..<capacity).filter { values[$0 * 15 + 10] > 0 }.count
+        }
+        return count
+    }
+    #endif
 
     init(points: [CapturedPoint], position: SIMD3<Float>, tint: SIMD3<Float>, radius: Float,
          opacity: Float, capacity: Int? = nil, revealOrigin: SIMD3<Float> = .zero) throws {
@@ -150,8 +208,10 @@ private final class SplatCloud {
         anchor.addChild(entity)
     }
 
-    func update(points: [CapturedPoint], position: SIMD3<Float>) {
+    func update(points: [CapturedPoint], position: SIMD3<Float>, revealOrigin: SIMD3<Float> = .zero) {
         precondition(points.count <= capacity)
+        activeCount = points.count
+        self.revealOrigin = revealOrigin
         buffer.replaceUnsafeMutableBytes { bytes in
             let values = bytes.bindMemory(to: Float.self)
             for index in 0..<capacity {
@@ -184,7 +244,7 @@ private final class SplatCloud {
         if revealOrder.isEmpty {
             buffer.withUnsafeBytes { bytes in
                 let values = bytes.bindMemory(to: Float.self)
-                let distances = (0..<capacity).map { index in
+                let distances = (0..<activeCount).map { index in
                     simd_length(SIMD3(values[index * 15], values[index * 15 + 1], values[index * 15 + 2]) - revealOrigin)
                 }
                 let near = distances.min() ?? 0, far = distances.max() ?? 0
@@ -200,6 +260,7 @@ private final class SplatCloud {
         buffer.withUnsafeMutableBytes { bytes in
             let values = bytes.bindMemory(to: Float.self)
             for index in 0..<capacity {
+                guard index < activeCount else { values[index * 15 + 10] = 0; continue }
                 let ramp = max(0, min(1, (reveal * 1.15 - revealOrder[index]) / 0.15))
                 let eased = ramp * ramp * (3 - 2 * ramp)
                 values[index * 15 + 3] = radius * radiusScale

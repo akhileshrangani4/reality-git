@@ -41,6 +41,7 @@ final class ARSessionController: NSObject, ObservableObject {
     private let diffRenderer = DiffRenderer()
     private let captureParticles = CaptureParticles()
     private var captureAim: SIMD3<Float>?
+    private var provisionalCapture: ReferenceCapture?
     private let tracker = LocalObjectTracker()
     private var trackingGeneration = UUID()
     private var workerBusy = false
@@ -62,6 +63,7 @@ final class ARSessionController: NSObject, ObservableObject {
         // deliver them on this queue; future image processing belongs elsewhere.
         arView.session.delegateQueue = .main
         arView.session.delegate = self
+        diffRenderer.prepare(in: arView)
     }
 
     func start() async {
@@ -166,14 +168,13 @@ final class ARSessionController: NSObject, ObservableObject {
             } else if let imageRect {
                 selectionRect = screenRect(imageRect, frame: frame)
             }
-            let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 0.125
+            let localDue = !workerBusy && frame.timestamp - lastSampleTime >= 1.0 / 30.0
             let assistantDue = assistant.wantsSample(at: frame.timestamp)
-            if (localDue || assistantDue), let sample = FrameSample(frame: frame) {
+            // Model sources also get local trace entries for exact-frame cache reuse.
+            if localDue, let sample = FrameSample(frame: frame) {
                 if assistantDue { assistant.offer(sample) }
-                if localDue {
-                    lastSampleTime = frame.timestamp
-                    submit(sample, selection: nil)
-                }
+                lastSampleTime = frame.timestamp
+                submit(sample, selection: nil)
             }
         } else {
             selectionRect = nil
@@ -187,7 +188,8 @@ final class ARSessionController: NSObject, ObservableObject {
         let reduceMotion = UIAccessibility.isReduceMotionEnabled
         diffRenderer.update(in: arView, reference: objectSession.reference, current: displayCapture,
             showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state.showsCurrentOverlay,
-            reliable: next.isReady, time: frame.timestamp, reduceMotion: reduceMotion)
+            reliable: next.isReady, time: frame.timestamp, reduceMotion: reduceMotion,
+            provisional: overlayIsFresh(in: frame) ? provisionalCapture : nil)
         let confirmedReply = assistant.evidence.map { $0.0.status == .tracked || $0.0.status == .identityConfirmed } ?? false
         let capturing = objectSession.reference == nil && (assistant.isThinking || (workerBusy && confirmedReply))
         let nextStage: CaptureStage = !next.isReady || !hasSelection || !assistant.connected ? .idle
@@ -258,6 +260,7 @@ final class ARSessionController: NSObject, ObservableObject {
             diffRenderer.reset()
         }
         captureParticles.reset()
+        provisionalCapture = nil
         switch selection {
         case .point(let point): captureAim = sample.captureAim(at: point)
         case .rectangle(let rect): captureAim = sample.captureAim(at: CGPoint(x: rect.midX, y: rect.midY))
@@ -282,6 +285,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func suspendSelection() {
+        provisionalCapture = nil
         localTrackConfidence = 0
         diffRenderer.hide()
         captureParticles.hide()
@@ -320,6 +324,7 @@ final class ARSessionController: NSObject, ObservableObject {
     }
 
     private func invalidateSelection() {
+        provisionalCapture = nil
         localTrackConfidence = 0
         assistant.resetSelection()
         objectSession.reset()
@@ -348,7 +353,11 @@ final class ARSessionController: NSObject, ObservableObject {
         let key = objectSession.key(for: sample)
         let referencePosition = objectSession.reference?.position
         Task {
-            let result = await tracker.process(sample, generation: generation, recovery: recovery, referencePosition: referencePosition)
+            let result = await tracker.process(sample, generation: generation, recovery: recovery,
+                referencePosition: referencePosition, selection: selection, onReference: { capture in
+                    guard generation == self.trackingGeneration, self.wantsRunning, self.isRunning, self.status.isReady else { return }
+                    self.objectSession.captureReference(capture, key: key)
+                })
             workerBusy = false
             #if DEBUG
             let shouldLogInference = result.message != lastInferenceMessage || sample.timestamp - lastInferenceDiagnosticTime >= 1
@@ -360,6 +369,7 @@ final class ARSessionController: NSObject, ObservableObject {
             #endif
             if generation == trackingGeneration, wantsRunning, isRunning, status.isReady,
                let latest = arView.session.currentFrame {
+                provisionalCapture = result.provisionalCapture
                 objectSession.ingest(result, key: key, now: latest.timestamp, visibility: referenceVisibility(sample: sample, trackedRect: ReferenceVisibility.occupiedRect(trackedRect: result.rect, position: result.worldPosition, bounds: result.worldBounds, confidence: result.confidence)))
                 lastResultTime = sample.timestamp
                 resultCameraPose = sample.cameraToWorld

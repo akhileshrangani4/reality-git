@@ -18,6 +18,7 @@ public actor NativeCodexClient {
     private var pollActive = false
     private var refresh: (id: UUID, task: Task<Tokens, Error>)?
     private var availableModels: [ScanModel] = []
+    private var referenceImage: (key: ObservationKey, url: String)?
 
     private struct Tokens: Codable, Sendable {
         let accessToken: String
@@ -128,7 +129,7 @@ public actor NativeCodexClient {
 
     public func signOut() throws {
         // Invalidate in-flight work even if Keychain is temporarily locked. Never resurrect a login.
-        revision = UUID(); challenge = nil; tokens = nil; availableModels = []
+        revision = UUID(); challenge = nil; tokens = nil; availableModels = []; referenceImage = nil
         refresh?.task.cancel(); refresh = nil; loaded = true
         try store.remove()
     }
@@ -142,14 +143,19 @@ public actor NativeCodexClient {
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try Self.observationBody(frame, reference: reference)
+        if let reference {
+            if referenceImage?.key != reference.key {
+                referenceImage = (reference.key, "data:image/jpeg;base64," + (try AstraPerception.crop(reference)).base64EncodedString())
+            }
+        } else { referenceImage = nil }
+        request.httpBody = try Self.observationBody(frame, reference: reference, referenceImageURL: referenceImage?.url)
         let data = try await authorized(request, limit: 1_048_576, eventStream: true)
         try check(revision)
         return try AstraPerception.parse(data)
     }
 
-    static func observationBody(_ frame: FrameRequest, reference: FrameRequest?) throws -> Data {
-        var body = try AstraPerception.body(frame, reference: reference)
+    static func observationBody(_ frame: FrameRequest, reference: FrameRequest?, referenceImageURL: String? = nil) throws -> Data {
+        var body = try AstraPerception.body(frame, reference: reference, referenceImageURL: referenceImageURL)
         body["model"] = frame.modelID
         body.removeValue(forKey: "max_output_tokens") // Not a field in Codex's Responses request.
         body["instructions"] = "You are Reality Git's camera perception assistant. Follow the supplied object-location task and return only its structured result."
@@ -158,6 +164,9 @@ public actor NativeCodexClient {
         body["tool_choice"] = "none"
         body["parallel_tool_calls"] = false
         body["include"] = [String]()
+        // Codex's supported routing hint. Reference bytes and the prompt prefix stay identical.
+        // This does not cache answers or promise a provider cache hit for changing camera frames.
+        body["prompt_cache_key"] = "realitygit-v1-" + frame.key.sessionID.uuidString + "-" + frame.key.objectID.uuidString
         let data = try JSONSerialization.data(withJSONObject: body)
         guard data.count <= 6_000_000 else { throw NativeCodexError.invalidResponse }
         return data
