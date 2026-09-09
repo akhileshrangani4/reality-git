@@ -173,10 +173,11 @@ final class ARSessionController: NSObject, ObservableObject {
             selectedPosition = nil
             objectSession.loseCurrent()
         }
-        // When local advancement fails, green marks Astra's last measured world position.
+        // Green uses the measured surface and pose from the same observation.
+        // When local advancement fails, use Astra's last measured surface.
         // Historical image rectangles are never projected directly onto the current screen.
-        let displayPosition = objectSession.current ?? (selectionRect == nil ? objectSession.observedPosition(now: frame.timestamp) : nil)
-        diffRenderer.update(in: arView, reference: objectSession.reference, current: displayPosition,
+        let displayCapture = objectSession.currentCapture ?? (selectionRect == nil ? objectSession.observedCapture(now: frame.timestamp) : nil)
+        diffRenderer.update(in: arView, reference: objectSession.reference, current: displayCapture,
             showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state.showsCurrentOverlay,
             reliable: next.isReady)
         if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }

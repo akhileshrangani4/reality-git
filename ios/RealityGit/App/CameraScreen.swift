@@ -11,10 +11,10 @@ struct CameraScreen: View {
             CameraView(controller: controller).ignoresSafeArea()
             if let rect = controller.dragRect ?? controller.selectionRect {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(controller.currentScreenOverlay == nil ? Color.clear : Color.green.opacity(0.2))
+                    .fill(controller.currentScreenOverlay == nil ? Color.clear : Color.green.opacity(0.06))
                     .overlay {
                         RoundedRectangle(cornerRadius: 8).strokeBorder(
-                            controller.currentScreenOverlay == nil ? Color.white.opacity(0.8) : .green,
+                            controller.currentScreenOverlay == nil ? Color.white.opacity(0.8) : Color.green.opacity(0.55),
                             style: StrokeStyle(lineWidth: 2, dash: controller.dragRect == nil ? [] : [6, 4]))
                     }
                     .frame(width: max(0, rect.width), height: max(0, rect.height))

@@ -10,6 +10,7 @@ enum ObjectSelection: Sendable {
 }
 
 struct ReferenceCapture: Sendable {
+    static let maximumPointCount = 4000
     let timestamp: Double
     let position: SIMD3<Float>
     let bounds: SIMD3<Float>
@@ -18,18 +19,19 @@ struct ReferenceCapture: Sendable {
 
 struct LocalTrackingResult: Sendable {
     let rect: CGRect?
-    let worldPosition: SIMD3<Float>?
-    let worldBounds: SIMD3<Float>?
+    let currentCapture: ReferenceCapture?
+    var worldPosition: SIMD3<Float>? { currentCapture?.position }
+    var worldBounds: SIMD3<Float>? { currentCapture?.bounds }
     let confidence: Float
     let message: String
     let referenceCapture: ReferenceCapture?
     let astraCapture: ReferenceCapture?
     let astraSourceTime: Double
-    init(rect: CGRect?, worldPosition: SIMD3<Float>?, confidence: Float, message: String,
-         worldBounds: SIMD3<Float>? = nil, referenceCapture: ReferenceCapture? = nil,
+    init(rect: CGRect?, currentCapture: ReferenceCapture?, confidence: Float, message: String,
+         referenceCapture: ReferenceCapture? = nil,
          astraCapture: ReferenceCapture? = nil, astraSourceTime: Double = -.infinity) {
-        self.rect = rect; self.worldPosition = worldPosition; self.confidence = confidence; self.message = message
-        self.worldBounds = worldBounds; self.referenceCapture = referenceCapture
+        self.rect = rect; self.currentCapture = currentCapture; self.confidence = confidence; self.message = message
+        self.referenceCapture = referenceCapture
         self.astraCapture = astraCapture; self.astraSourceTime = astraSourceTime
     }
 }
@@ -116,9 +118,9 @@ actor LocalObjectTracker {
             let polygon = relativeOutline.map { CGPoint(x: rect.minX + $0.x * rect.width, y: rect.minY + $0.y * rect.height) }
             let geometry = measure(sample, polygon: polygon)
             if referencePosition == nil, referenceCapture == nil { referenceCapture = geometry }
-            return LocalTrackingResult(rect: rect, worldPosition: geometry?.position, confidence: tracked.confidence,
+            return LocalTrackingResult(rect: rect, currentCapture: geometry, confidence: tracked.confidence,
                 message: geometry == nil ? "Move a little closer" : "Following your object",
-                worldBounds: geometry?.bounds, referenceCapture: referenceCapture,
+                referenceCapture: referenceCapture,
                 astraCapture: astraCapture, astraSourceTime: lastAstraKey?.captureTime ?? -.infinity)
         } catch {
             tracked = nil
@@ -127,7 +129,7 @@ actor LocalObjectTracker {
     }
 
     private func missing(_ message: String) -> LocalTrackingResult {
-        LocalTrackingResult(rect: nil, worldPosition: nil, confidence: 0, message: message, referenceCapture: referenceCapture,
+        LocalTrackingResult(rect: nil, currentCapture: nil, confidence: 0, message: message, referenceCapture: referenceCapture,
             astraCapture: astraCapture, astraSourceTime: lastAstraKey?.captureTime ?? -.infinity)
     }
 
@@ -147,7 +149,7 @@ actor LocalObjectTracker {
         guard pixels.count >= 12 else { return nil }
         var points: [SIMD3<Float>] = [], acceptedPixels: [(Int, Int)] = []
         // Bound both capture size and per-observation work for large selected objects.
-        let step = max(1, Int(ceil(Double(pixels.count) / 4000)))
+        let step = max(1, Int(ceil(Double(pixels.count) / Double(ReferenceCapture.maximumPointCount))))
         for i in stride(from: 0, to: pixels.count, by: step) {
             let (x, y) = pixels[i]
             guard let pixel = Projection.imagePixel(depthX: x, depthY: y,

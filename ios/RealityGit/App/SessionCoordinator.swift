@@ -15,18 +15,22 @@ final class SessionCoordinator: ObservableObject {
     private var frameID: UInt64 = 0
     private var reconciler: Reconciler?
     private var reducer: DiffReducer?
-    private(set) var current: SIMD3<Float>?
+    private(set) var currentCapture: ReferenceCapture?
+    var current: SIMD3<Float>? { currentCapture?.position }
     private(set) var lastPositionTime: Double = -.infinity
     private var lastAstraSourceTime: Double = -.infinity
     private var observed: ReferenceCapture?
     func observedPosition(now: Double) -> SIMD3<Float>? {
+        observedCapture(now: now)?.position
+    }
+    func observedCapture(now: Double) -> ReferenceCapture? {
         guard state != .absent, let observed, now >= observed.timestamp,
               now - observed.timestamp <= AstraGeometry.authorityLifetime else { return nil }
-        return observed.position
+        return observed
     }
     func reset() {
         sessionID = UUID(); objectID = UUID(); frameID = 0
-        reference = nil; reconciler = nil; reducer = nil; current = nil
+        reference = nil; reconciler = nil; reducer = nil; currentCapture = nil
         lastPositionTime = -.infinity; state = .unchanged
         lastAstraSourceTime = -.infinity; observed = nil
         message = "Hold the selected object still to remember its place."
@@ -70,9 +74,9 @@ final class SessionCoordinator: ObservableObject {
         }
         guard reference != nil,
               now >= key.captureTime, now - key.captureTime <= 0.5 else { return }
-        guard let position = result.worldPosition, result.worldBounds != nil,
+        guard let capture = result.currentCapture, capture.timestamp == key.captureTime,
               result.confidence >= 0.6 else {
-            current = nil
+            currentCapture = nil
             // Empty reference depth does not establish absence while Astra still sees the object elsewhere.
             let currentVisibility: VisibilityEvidence = observedPosition(now: now) == nil ? visibility : .unknown
             reducer?.observe(position: nil, identityConfirmed: false, visibility: currentVisibility, time: key.captureTime, frameID: key.frameID)
@@ -80,9 +84,10 @@ final class SessionCoordinator: ObservableObject {
             message = reference == nil ? "Capturing · hold still, or draw a box around the object." : (state == .absent ? "Absent · remembered shape marks its place." : "Looking for remembered object")
             return
         }
+        let position = capture.position
         guard reconciler?.accept(PositionObservation(key: key, position: position,
             identityConfirmed: true, confidence: result.confidence)) == true else { return }
-        current = position; lastPositionTime = key.captureTime
+        currentCapture = capture; lastPositionTime = key.captureTime
         reducer?.observe(position: position, identityConfirmed: true, visibility: .visibleOccupied,
             time: key.captureTime, frameID: key.frameID)
         state = reducer?.state ?? .unchanged
@@ -93,7 +98,7 @@ final class SessionCoordinator: ObservableObject {
         }
     }
     func loseCurrent() {
-        current = nil
+        currentCapture = nil
         if reference != nil {
             let next = state == .absent ? "Absent · remembered shape marks its place." : (state == .moved ? "Moved · looking for remembered object." : "Looking for remembered object")
             if message != next { message = next }
