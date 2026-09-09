@@ -1,6 +1,13 @@
 import RealityKit
 import SwiftUI
 
+enum AppPalette {
+    static let controlRGB = SIMD3<Float>(repeating: 1)
+    static var control: Color {
+        Color(red: Double(controlRGB.x), green: Double(controlRGB.y), blue: Double(controlRGB.z))
+    }
+}
+
 struct CameraScreen: View {
     @StateObject private var controller = ARSessionController()
     @Environment(\.scenePhase) private var scenePhase
@@ -70,7 +77,7 @@ private struct CaptureStatus: View {
         if !assistant.connected { return "Let Astra remember where things belong." }
         if !controller.hasSelection { return "Tap an object, or draw around it." }
         if controller.captureStage == .scanning { return "Scanning with Astra…" }
-        if controller.captureStage == .forming { return "Revealing captured shape…" }
+        if controller.captureStage == .forming { return "Capturing shape…" }
         if session.reference == nil { return assistant.message }
         if session.state == .absent { return "Gone · red marks its place" }
         if session.state == .moved {
@@ -88,7 +95,7 @@ private struct CaptureStatus: View {
                     if reduceMotion {
                         Image(systemName: "viewfinder").foregroundStyle(.white)
                     } else {
-                        ProgressView().tint(Color(red: 1, green: 0.48, blue: 0.36))
+                        ProgressView().tint(AppPalette.control)
                     }
                 }
                 Text(text).font(.subheadline.weight(.medium))
@@ -99,10 +106,10 @@ private struct CaptureStatus: View {
             if controller.status == .cameraDenied {
                 Button("Allow camera") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                }.buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+                }.buttonStyle(.borderedProminent).tint(AppPalette.control).foregroundStyle(.black)
             } else if !assistant.connected {
                 Button("Connect Astra") { showsSettings = true }
-                    .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+                    .buttonStyle(.borderedProminent).tint(AppPalette.control).foregroundStyle(.black)
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 16)

@@ -12,6 +12,7 @@ final class DiffRenderer {
     private var lastUpdateTime: TimeInterval?
     private var redOpacity: Float = 0
     private(set) var isRevealing = false
+    private(set) var captureImpact: SIMD3<Float>?
     private var green: AnchorEntity?
     private var greenCloud: SplatCloud?
     private var greenUsesBounds = false
@@ -26,6 +27,7 @@ final class DiffRenderer {
         red?.removeFromParent(); green?.removeFromParent()
         red = nil; green = nil; referenceKey = nil
         redCloud = nil; captureStartTime = nil; lastUpdateTime = nil; redOpacity = 0; isRevealing = false
+        captureImpact = nil
         greenCloud = nil; greenUsesBounds = false; greenTimestamp = nil
     }
     func update(in view: ARView, reference: ReferenceState?, current: ReferenceCapture?,
@@ -34,9 +36,11 @@ final class DiffRenderer {
         guard reliable else { hide(); return }
         if referenceKey != reference.captureKey {
             reset(); referenceKey = reference.captureKey
+            let impactOffset = reference.points.min { simd_length_squared($0.position) < simd_length_squared($1.position) }?.position ?? .zero
+            captureImpact = reference.position + impactOffset
             do {
                 let cloud = try SplatCloud(points: reference.points, position: reference.position,
-                    tint: SIMD3(1, 0.15, 0.1), radius: 0.006, opacity: 0.25)
+                    tint: SIMD3(1, 0.15, 0.1), radius: 0.006, opacity: 0.25, revealOrigin: impactOffset)
                 cloud.setPresentation(reveal: reduceMotion ? 1 : 0, opacityScale: 1)
                 redCloud = cloud; red = cloud.anchor
                 captureStartTime = reduceMotion ? nil : time
@@ -54,10 +58,10 @@ final class DiffRenderer {
             greenTimestamp = current.timestamp
         }
         let elapsed = captureStartTime.map { max(0, time - $0) } ?? .infinity
-        let reveal = reduceMotion ? 1 : Float(min(1, elapsed / 0.55))
+        let reveal = reduceMotion ? 1 : Float(min(1, elapsed / 0.42))
         isRevealing = reveal < 1
         // A brief completed-capture preview flows into the normal diff display.
-        let preview = reduceMotion ? 0 : Float(max(0, min(1, (0.95 - elapsed) / 0.25)))
+        let preview = reduceMotion ? 0 : Float(max(0, min(1, (0.8 - elapsed) / 0.22))) * 0.32
         let targetOpacity: Float = showRed ? 1 : preview
         let delta = min(0.1, max(0, time - (lastUpdateTime ?? time)))
         lastUpdateTime = time
@@ -66,7 +70,7 @@ final class DiffRenderer {
             redOpacity += (targetOpacity - redOpacity) * Float(1 - exp(-delta / 0.07))
             if abs(redOpacity - targetOpacity) < 0.005 { redOpacity = targetOpacity }
         }
-        redCloud?.setPresentation(reveal: reveal, opacityScale: redOpacity)
+        redCloud?.setPresentation(reveal: reveal, opacityScale: redOpacity, radiusScale: showRed ? 1 : 0.5)
         if redCloud == nil { red?.components.set(OpacityComponent(opacity: redOpacity)) }
         red?.isEnabled = redOpacity > 0.001
         green?.isEnabled = reliable && showGreen && current != nil
@@ -119,13 +123,15 @@ private final class SplatCloud {
     private let tint: SIMD3<Float>
     private let radius: Float
     private let opacity: Float
+    private let revealOrigin: SIMD3<Float>
     private var revealOrder: [Float] = []
-    private var lastPresentation: SIMD2<Float>?
+    private var lastPresentation: SIMD3<Float>?
 
     init(points: [CapturedPoint], position: SIMD3<Float>, tint: SIMD3<Float>, radius: Float,
-         opacity: Float, capacity: Int? = nil) throws {
+         opacity: Float, capacity: Int? = nil, revealOrigin: SIMD3<Float> = .zero) throws {
         self.capacity = max(1, capacity ?? points.count)
         self.tint = tint; self.radius = radius; self.opacity = opacity
+        self.revealOrigin = revealOrigin
         let stride = 60
         let byteCount = self.capacity * stride
         buffer = try LowLevelBuffer(descriptor: .init(capacity: (byteCount + 15) & ~15, sizeMultiple: 16))
@@ -172,16 +178,22 @@ private final class SplatCloud {
         lastPresentation = nil
     }
 
-    func setPresentation(reveal: Float, opacityScale: Float) {
-        let presentation = SIMD2(reveal, opacityScale)
+    func setPresentation(reveal: Float, opacityScale: Float, radiusScale: Float = 1) {
+        let presentation = SIMD3(reveal, opacityScale, radiusScale)
         guard lastPresentation != presentation else { return }
         if revealOrder.isEmpty {
             buffer.withUnsafeBytes { bytes in
                 let values = bytes.bindMemory(to: Float.self)
-                let heights = (0..<capacity).map { values[$0 * 15 + 1] }
-                let top = heights.max() ?? 0, bottom = heights.min() ?? 0
-                let height = max(0.001, top - bottom)
-                revealOrder = heights.map { (top - $0) / height }
+                let distances = (0..<capacity).map { index in
+                    simd_length(SIMD3(values[index * 15], values[index * 15 + 1], values[index * 15 + 2]) - revealOrigin)
+                }
+                let near = distances.min() ?? 0, far = distances.max() ?? 0
+                let extent = max(0.001, far - near)
+                // Points resolve out from the impact with a fixed stagger, without a flat wipe.
+                revealOrder = distances.enumerated().map { index, distance in
+                    let noise = sin(Float(index) * 12.9898) * 43758.5453
+                    return (distance - near) / extent * 0.7 + (noise - floor(noise)) * 0.3
+                }
             }
         }
         // Animate splat opacity directly: mesh material opacity does not control this resource.
@@ -190,6 +202,9 @@ private final class SplatCloud {
             for index in 0..<capacity {
                 let ramp = max(0, min(1, (reveal * 1.15 - revealOrder[index]) / 0.15))
                 let eased = ramp * ramp * (3 - 2 * ramp)
+                values[index * 15 + 3] = radius * radiusScale
+                values[index * 15 + 4] = radius * radiusScale
+                values[index * 15 + 5] = radius * radiusScale
                 values[index * 15 + 10] = opacity * eased * opacityScale
             }
         }

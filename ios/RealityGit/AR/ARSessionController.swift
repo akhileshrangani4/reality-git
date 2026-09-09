@@ -194,7 +194,7 @@ final class ARSessionController: NSObject, ObservableObject {
             : (diffRenderer.isRevealing ? .forming : (capturing ? .scanning : .idle))
         if captureStage != nextStage { captureStage = nextStage }
         captureParticles.update(in: arView, camera: frame.camera.transform,
-            target: objectSession.reference?.position ?? captureAim,
+            target: diffRenderer.captureImpact ?? captureAim,
             active: nextStage != .idle, reliable: next.isReady, reduceMotion: reduceMotion, time: frame.timestamp)
         if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }
     }

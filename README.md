@@ -14,7 +14,7 @@ Connect Astra in Settings, tap an object or draw around it, then move it. A red 
 
 The main screen contains the camera, one status line, and Settings. Connection, remembered-shape preview and Start over are in Settings. A saved connection is restored on launch; Disconnect forgets it.
 
-During initial capture, warm particles travel from the camera toward the measured selection while Astra is working. Once the native surface is ready, the red shape reveals from top to bottom and briefly previews the capture. Later red overlays fade in smoothly. These effects follow capture state without adding a processing delay; Reduce Motion disables them.
+During initial capture, a scattered spray of white particles, matching the camera buttons, flows slowly toward the measured selection. Particles carry momentum through smooth turbulence and fade softly as they reach the object. Once the native surface is ready, red points form outward from the contact point and briefly preview the capture. Later red overlays fade in smoothly. These effects follow capture state without adding a processing delay; Reduce Motion disables them.
 
 ## Validation
 
