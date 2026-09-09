@@ -14,6 +14,8 @@ Connect Astra in Settings, tap an object or draw around it, then move it. A red 
 
 The main screen contains the camera, one status line, and Settings. Connection, remembered-shape preview and Start over are in Settings. A saved connection is restored on launch; Disconnect forgets it.
 
+During initial capture, warm particles travel from the camera toward the measured selection while Astra is working. Once the native surface is ready, the red shape reveals from top to bottom and briefly previews the capture. Later red overlays fade in smoothly. These effects follow capture state without adding a processing delay; Reduce Motion disables them.
+
 ## Validation
 
 Core and server automated checks, a live Astra selection/reacquisition smoke test on synthetic images, and a signed iPhone build pass. The live smoke measured approximately 5.3 seconds for initial selection and 3.9 seconds for reacquisition; these are individual measurements, not latency guarantees. Sustained physical tracking, lookalikes, occlusion and restoration still require device validation.

@@ -5,6 +5,10 @@ import RealityKit
 import RealityGitCore
 import UIKit
 
+enum CaptureStage {
+    case idle, scanning, forming
+}
+
 @MainActor
 final class ARSessionController: NSObject, ObservableObject {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
@@ -14,6 +18,7 @@ final class ARSessionController: NSObject, ObservableObject {
     @Published private(set) var ghostStatus = "Capturing depth shape…"
     @Published private(set) var hasDepth = false
     @Published private(set) var canReset = false
+    @Published private(set) var captureStage: CaptureStage = .idle
 
     @Published private(set) var hasSelection = false
     @Published private(set) var selectionMessage = "Tap an object, or draw a box around it."
@@ -34,6 +39,8 @@ final class ARSessionController: NSObject, ObservableObject {
     let assistant = AssistantCoordinator()
     let objectSession = SessionCoordinator()
     private let diffRenderer = DiffRenderer()
+    private let captureParticles = CaptureParticles()
+    private var captureAim: SIMD3<Float>?
     private let tracker = LocalObjectTracker()
     private var trackingGeneration = UUID()
     private var workerBusy = false
@@ -177,9 +184,18 @@ final class ARSessionController: NSObject, ObservableObject {
         // When local advancement fails, use Astra's last measured surface.
         // Historical image rectangles are never projected directly onto the current screen.
         let displayCapture = objectSession.currentCapture ?? (selectionRect == nil ? objectSession.observedCapture(now: frame.timestamp) : nil)
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
         diffRenderer.update(in: arView, reference: objectSession.reference, current: displayCapture,
             showRed: previewReference || objectSession.state == .moved || objectSession.state == .absent, showGreen: objectSession.state.showsCurrentOverlay,
-            reliable: next.isReady)
+            reliable: next.isReady, time: frame.timestamp, reduceMotion: reduceMotion)
+        let confirmedReply = assistant.evidence.map { $0.0.status == .tracked || $0.0.status == .identityConfirmed } ?? false
+        let capturing = objectSession.reference == nil && (assistant.isThinking || (workerBusy && confirmedReply))
+        let nextStage: CaptureStage = !next.isReady || !hasSelection || !assistant.connected ? .idle
+            : (diffRenderer.isRevealing ? .forming : (capturing ? .scanning : .idle))
+        if captureStage != nextStage { captureStage = nextStage }
+        captureParticles.update(in: arView, camera: frame.camera.transform,
+            target: objectSession.reference?.position ?? captureAim,
+            active: nextStage != .idle, reliable: next.isReady, reduceMotion: reduceMotion, time: frame.timestamp)
         if ghostStatus != diffRenderer.status { ghostStatus = diffRenderer.status }
     }
 
@@ -241,6 +257,11 @@ final class ARSessionController: NSObject, ObservableObject {
             objectSession.reset()
             diffRenderer.reset()
         }
+        captureParticles.reset()
+        switch selection {
+        case .point(let point): captureAim = sample.captureAim(at: point)
+        case .rectangle(let rect): captureAim = sample.captureAim(at: CGPoint(x: rect.midX, y: rect.midY))
+        }
         resultCameraPose = nil
         trackingGeneration = UUID()
         #if DEBUG
@@ -263,6 +284,8 @@ final class ARSessionController: NSObject, ObservableObject {
     private func suspendSelection() {
         localTrackConfidence = 0
         diffRenderer.hide()
+        captureParticles.hide()
+        captureStage = .idle
         trackingGeneration = UUID()
         pendingSelection = nil
         resultCameraPose = nil
@@ -301,6 +324,9 @@ final class ARSessionController: NSObject, ObservableObject {
         assistant.resetSelection()
         objectSession.reset()
         diffRenderer.reset()
+        captureParticles.reset()
+        captureAim = nil
+        captureStage = .idle
         resultCameraPose = nil
         trackingGeneration = UUID()
         #if DEBUG

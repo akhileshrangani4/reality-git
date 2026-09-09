@@ -1,5 +1,6 @@
 import ARKit
 import CoreVideo
+import RealityGitCore
 import simd
 
 /// A single owned image and copied depth/calibration snapshot. The image is
@@ -87,6 +88,30 @@ final class FrameSample: @unchecked Sendable {
 }
 
 extension FrameSample {
+    /// A measured aiming point for capture feedback, not an object identity or reference.
+    func captureAim(at point: CGPoint) -> SIMD3<Float>? {
+        guard point.x.isFinite, point.y.isFinite, (0...1).contains(point.x),
+              (0...1).contains(point.y) else { return nil }
+        let x = min(depthWidth - 1, Int(point.x * Double(depthWidth)))
+        let y = min(depthHeight - 1, Int(point.y * Double(depthHeight)))
+        var depths: [Float] = []
+        for row in max(0, y - 2)...min(depthHeight - 1, y + 2) {
+            for column in max(0, x - 2)...min(depthWidth - 1, x + 2) {
+                let index = row * depthWidth + column
+                let value = depth[index]
+                if confidence[index] >= 1, value.isFinite, (0.15...8).contains(value) { depths.append(value) }
+            }
+        }
+        guard depths.count >= 3 else { return nil }
+        depths.sort()
+        guard let camera = RealityGitCore.Projection.unproject(
+            u: Float(point.x) * Float(CVPixelBufferGetWidth(image)),
+            v: Float(point.y) * Float(CVPixelBufferGetHeight(image)), depth: depths[depths.count / 2],
+            fx: intrinsics[0][0], fy: intrinsics[1][1], cx: intrinsics[2][0], cy: intrinsics[2][1]) else { return nil }
+        let world = cameraToWorld * SIMD4(camera, 1)
+        return SIMD3(world.x, world.y, world.z)
+    }
+
     /// Camera YCbCr sampled only at accepted depth pixels.
     func colors(at pixels: [(Int, Int)]) -> [SIMD3<Float>] {
         CVPixelBufferLockBaseAddress(image, .readOnly)

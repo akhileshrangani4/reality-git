@@ -63,11 +63,14 @@ private struct CaptureStatus: View {
     @ObservedObject var assistant: AssistantCoordinator
     @Binding var showsSettings: Bool
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var text: String {
         if !controller.status.isReady { return controller.status.message }
         if !assistant.connected { return "Let Astra remember where things belong." }
         if !controller.hasSelection { return "Tap an object, or draw around it." }
+        if controller.captureStage == .scanning { return "Scanning with Astra…" }
+        if controller.captureStage == .forming { return "Revealing captured shape…" }
         if session.reference == nil { return assistant.message }
         if session.state == .absent { return "Gone · red marks its place" }
         if session.state == .moved {
@@ -81,11 +84,17 @@ private struct CaptureStatus: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack(spacing: 10) {
-                if assistant.isThinking && session.reference == nil {
-                    ProgressView().tint(.white)
+                if controller.captureStage != .idle {
+                    if reduceMotion {
+                        Image(systemName: "viewfinder").foregroundStyle(.white)
+                    } else {
+                        ProgressView().tint(Color(red: 1, green: 0.48, blue: 0.36))
+                    }
                 }
                 Text(text).font(.subheadline.weight(.medium))
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    .contentTransition(.opacity)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: text)
             }
             if controller.status == .cameraDenied {
                 Button("Allow camera") {
