@@ -12,6 +12,7 @@ struct CameraScreen: View {
     @StateObject private var controller = ARSessionController()
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsSettings = false
+    @State private var pendingConnection: String?
 
     var body: some View {
         ZStack {
@@ -36,10 +37,10 @@ struct CameraScreen: View {
                     Text("Reality Git").font(.headline)
                     Spacer()
                     Button { showsSettings = true } label: {
-                        Image(systemName: "slider.horizontal.3")
+                        Image(systemName: "gearshape")
                             .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
                     }
+                    .buttonStyle(.glass).buttonBorderShape(.circle)
                     .accessibilityLabel("Settings")
                 }
                 Spacer()
@@ -49,18 +50,25 @@ struct CameraScreen: View {
             }
             .padding(.horizontal, 22).foregroundStyle(.white)
         }
-        .sheet(isPresented: $showsSettings) { CaptureSettings(controller: controller, assistant: controller.assistant) }
+        .sheet(isPresented: $showsSettings) {
+            CaptureSettings(assistant: controller.assistant, previewReference: $controller.previewReference,
+                hasReference: controller.objectSession.reference != nil, canReset: controller.canReset,
+                initialLink: pendingConnection ?? "", reset: controller.reset)
+                .onDisappear { pendingConnection = nil }
+        }
         .task {
-            if !controller.assistant.connected, let saved = UserDefaults.standard.string(forKey: "lastMacAddress") {
-                controller.assistant.connect(address: saved)
-            }
+            await controller.assistant.restoreConnection()
             await controller.start()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await controller.start() } }
+            if phase == .active { Task { await controller.start(); await controller.assistant.refreshAccount() } }
             else if phase == .background { controller.pause() }
         }
         .onDisappear { controller.pause() }
+        .onOpenURL { url in
+            pendingConnection = url.absoluteString
+            showsSettings = true
+        }
     }
 }
 
@@ -74,9 +82,9 @@ private struct CaptureStatus: View {
 
     private var text: String {
         if !controller.status.isReady { return controller.status.message }
-        if !assistant.connected { return "Let Astra remember where things belong." }
+        if !assistant.connected { return assistant.message }
         if !controller.hasSelection { return "Tap an object, or draw around it." }
-        if controller.captureStage == .scanning { return "Scanning with Astra…" }
+        if controller.captureStage == .scanning { return "Scanning…" }
         if controller.captureStage == .forming { return "Capturing shape…" }
         if session.reference == nil { return assistant.message }
         if session.state == .absent { return "Gone · red marks its place" }
@@ -106,62 +114,20 @@ private struct CaptureStatus: View {
             if controller.status == .cameraDenied {
                 Button("Allow camera") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                }.buttonStyle(.borderedProminent).tint(AppPalette.control).foregroundStyle(.black)
+                }.buttonStyle(.glassProminent).tint(AppPalette.control).foregroundStyle(.black)
             } else if !assistant.connected {
-                Button("Connect Astra") { showsSettings = true }
-                    .buttonStyle(.borderedProminent).tint(AppPalette.control).foregroundStyle(.black)
+                Button(assistant.connectionHost == nil ? "Connect to Codex" : "Open Settings") { showsSettings = true }
+                    .buttonStyle(.glassProminent).tint(AppPalette.control).foregroundStyle(.black)
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 16)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
-    }
-}
-
-private struct CaptureSettings: View {
-    @ObservedObject var controller: ARSessionController
-    @ObservedObject var assistant: AssistantCoordinator
-    @Environment(\.dismiss) private var dismiss
-    @State private var address = UserDefaults.standard.string(forKey: "lastMacAddress") ?? "http://"
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Astra connection") {
-                    TextField("http://your-mac.local:8080", text: $address)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    Text("Astra recognizes and finds your object. Camera images go through your local server to OpenAI; your iPhone supplies depth and places the overlays.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button(assistant.connected ? "Reconnect" : "Connect") {
-                        if assistant.connect(address: address) {
-                            UserDefaults.standard.set(address.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "lastMacAddress")
-                            controller.reset()
-                            dismiss()
-                        }
-                    }
-                    if assistant.connected {
-                        Button("Disconnect") {
-                            assistant.disconnect()
-                            UserDefaults.standard.removeObject(forKey: "lastMacAddress")
-                            controller.reset()
-                            dismiss()
-                        }
-                    }
-                    Text(assistant.message).font(.caption).foregroundStyle(.secondary)
-                }
-                if controller.objectSession.reference != nil {
-                    Section {
-                        Toggle("Show remembered shape", isOn: $controller.previewReference)
-                        Button("Start over") { controller.reset(); dismiss() }
-                    }
-                } else if controller.canReset {
-                    Button("Restart camera") { controller.reset(); dismiss() }
-                }
-            }
-            .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .onChange(of: assistant.modelID) { old, new in
+            if old != nil, old != new { controller.reset() }
         }
-        .presentationDetents([.medium, .large])
+        .onChange(of: assistant.connected) { _, _ in controller.reset() }
     }
 }
 

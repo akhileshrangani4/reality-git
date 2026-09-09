@@ -1,31 +1,21 @@
-# Astra perception
+# Model perception
 
-## Active flow
+The production companion uses `configureCompanion`, `CodexRuntime`, and `AstraWorker`. Astra is the default, with other compatible subscription models available through Settings.
 
-`Routes.configure` uses `AstraWorker` by default. One full-frame Astra observation replaces the earlier Mac-Vision proposal, label, comparison and retry chain.
+1. A tap or drawn box and its exact camera frame go to the selected model through Codex.
+2. The model returns a label, confidence, normalized top-left rectangle, and visible outline, or no match.
+3. The companion keeps the first confident reference immutable. Later observations compare its crop against the full current image.
+4. The phone samples LiDAR inside the returned outline. Only measured depth and camera calibration establish world geometry.
+5. A bounded Vision sequence advances the model's pixels between calls; it cannot independently select, identify, or reacquire an object. Uncertain model output revokes local continuity.
 
-1. A tap or drawn box and its exact camera frame go to Astra.
-2. Astra returns a short label, identity confidence, normalized top-left bounding box and visible silhouette (or no match).
-3. The server keeps the first confident reference crop immutable. Subsequent calls compare that crop against the full current image and locate the same object anywhere in it.
-4. The phone samples LiDAR within the model outline. It uses only measured depth and calibration for world geometry. The saved depth surface prepares the native red/green splats once.
-5. Between calls, a bounded local Vision sequence advances Astra's pixels. It does not select, identify or independently reacquire objects. An uncertain model response revokes local continuity. Astra-confirmed source depth also directly establishes movement/restoration if no newer spatial evidence contradicts it; a failed Apple advance cannot veto the model snapshot.
+`AstraPerception` provides the shared prompt, schema, crop, and output validation. Codex turns supply image inputs, `effort: low`, and `outputSchema`. The model ID comes from the account's capability-filtered catalog. Numeric types, finite coordinates, outline area, completed status, and output count are validated. Confidence below 0.8 remains unknown.
 
-The Responses request uses `gpt-6-astra`, `reasoning.effort=low`, `store=false`, image inputs and a strict JSON schema. All output fields are validated, including numeric types, finite/in-bounds coordinates, silhouette area, incomplete responses and refusals. Confidence below 0.8 is treated as unknown. Geometry is measured on the phone; model coordinates are image coordinates only.
+## Lifecycle
 
-## Latency and lifecycle
+One physical observation runs at a time. New selections retire older generations; cancellation cannot release the slot until the provider returns. The reference is never replaced by a later frame. Each phone job retains its exact RGB/depth source, so latency cannot mismatch a result with a newer camera image. Local authority expires ten seconds after the last confirmed source.
 
-There is one active request and no five-second comparison gate or 5/10/20/30-second candidate backoff. The provider request timeout is 20 seconds; phone transport allows 25 seconds. The active job pins its source image/depth for up to 30 seconds. Later samples cannot evict it. Fresh local advances provide live geometry. When advancement fails, green can mark Astra’s last measured world position for up to 10 seconds from its source timestamp, with a “last seen” status. Old model image boxes are never directly drawn on a new frame, and old snapshots cannot rewind newer physical observations or confirmed absence.
+Transport failures back off rather than continuously submitting. Invalid pairing, signed-out accounts, and unsupported models pause scanning with a Settings action. Rate or usage limits receive a longer retry interval. Switching models resets the scan.
 
-New selections cancel/retire old results. Duplicate or stale requests cannot replace the immutable reference. Local authority expires after 10 seconds from Astra's confirmed source. Reference geometry survives local tracking loss and interruption until Start over.
+Core and server tests cover selection, full-frame reacquisition, immutable references, old-selection isolation, bounded concurrency, payload validation, depth geometry, and protocol deadlines. Live Codex subscription checks passed for Astra and Luna on synthetic images. They do not establish physical tracking accuracy.
 
-## Validation
-
-Automated tests cover tap selection without Apple segmentation, whole-frame reacquisition without a candidate, uncertain initial retries, immutable references, old-selection isolation, bounded provider concurrency, invalid payloads, exact-source retention and sampled depth without shape-signature/background-ring gates.
-
-A live two-call smoke test on a synthetic marked object passed on September 8, 2026: initial selection ~5.3 s and moved-object reacquisition ~3.9 s. This verifies provider/schema integration and image coordinates, not physical tracking accuracy. Run it explicitly with `OPENAI_API_KEY` and `RUN_ASTRA_LIVE=1`, using `swift test --package-path server --filter AstraLiveTests`.
-
-The earlier `VisionWorker`, label-only and candidate-comparison adapters remain as legacy comparison/test fixtures. They are not used by the app's production route.
-
-## Provider grounding
-
-Existing verified contract: [Astra model](https://developers.openai.com/api/docs/models/gpt-6-astra), [image inputs](https://developers.openai.com/api/docs/guides/images-vision), [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs). The local ignored key is loaded into the server environment and is never put in the phone app or committed.
+The earlier API, Vision-only, label, and comparison adapters remain as regression fixtures. The normal executable starts the paired Codex companion and requires no API key. See [Codex integration](codex.md).

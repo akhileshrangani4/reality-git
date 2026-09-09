@@ -7,11 +7,13 @@ struct RealityGitApp: App {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--capture-preview") {
                 CaptureEffectsPreview().ignoresSafeArea().preferredColorScheme(.dark)
+            } else if ProcessInfo.processInfo.arguments.contains("--settings-preview") {
+                SettingsPreview()
             } else {
-                CameraScreen().preferredColorScheme(.dark)
+                CameraScreen()
             }
             #else
-            CameraScreen().preferredColorScheme(.dark)
+            CameraScreen()
             #endif
         }
     }

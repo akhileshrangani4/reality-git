@@ -1,33 +1,41 @@
-# Astra service setup
+# Codex companion setup
 
-The Mac relays images to Astra. Astra selects, labels, outlines and reacquires the object; Apple supplies camera/depth and advances the model's pixels between observations.
+Install Codex CLI and sign in with ChatGPT. The integration was verified with Codex 0.153.4. It uses the documented app-server protocol; it does not reuse subscription credentials for ordinary API requests.
 
 ## Run
 
-Set `OPENAI_API_KEY` in the server environment, then run from the repository root:
+From the repository root:
 
 ```sh
-swift run --package-path server RealityGitServer --lan
+codex login
+swift run --package-path server RealityGitServer --lan --pair-address http://YOUR-MAC.local:8080
+open ~/.reality-git/connect.html
 ```
 
-Without `--lan`, the service listens only on localhost. The LAN option listens on port 8080 on all IPv4 interfaces. Keep this unauthenticated hackathon service on a trusted local network.
+Replace YOUR-MAC with the Mac's local hostname, or use its private IPv4 address. The companion writes a private pairing card and connection link to `~/.reality-git/`. The token persists across restarts. `CODEX_BINARY` can select a Codex executable if it is not on PATH. `REALITY_GIT_STATE_DIR` can select a separate companion state directory.
+
+Without `--lan`, the service binds to localhost. The LAN prototype uses HTTP on port 8080 and must stay on a trusted private network. Pairing authorizes account controls and scan requests; it does not encrypt local traffic. Do not expose it to the public internet. OAuth credentials remain managed by Codex on the Mac.
+
+## Connect the iPhone
+
+1. Scan the pairing card using the iPhone Camera. The link opens Reality Git Settings. Tap **Connect**. Alternatively, paste the connection link into Settings.
+2. If Codex is already signed in with ChatGPT, the account and model list appear automatically.
+3. Otherwise, tap **Sign in with ChatGPT**, copy the displayed device code, and continue to the official ChatGPT page. Return to the app when finished. If device-code sign-in is unavailable, sign in with `codex login` on the Mac and tap **Reconnect**.
+4. Choose an available image model under **Model**. Astra is the default when available. Every offered model supports images and low effort.
+5. Tap **Done**, then tap an object to scan. Allow local network and camera access when prompted.
+
+The phone stores only its companion pairing link in Keychain. Model preference is saved separately. **Disconnect this iPhone** forgets pairing without signing the Mac out of ChatGPT.
+
+Keep the companion running. After a companion restart or network change, reconnect and start a new scan. Regenerate the pairing card with the new address if needed. To revoke a lost phone, stop the companion, remove its pairing-token file and old pairing card/link, then restart and pair your phone again.
+
+## Checks
 
 ```sh
 curl http://127.0.0.1:8080/health
+swift test --package-path Packages/RealityGitCore
+swift test --package-path server
 ```
 
-Expected response: `{"status":"ok"}`. Health checks transport; actual model access is exercised by an observation.
+Health only verifies the HTTP service. Account and observation routes require the pairing bearer token. Never put a ChatGPT token or OpenAI API key in the phone app.
 
-## Connect
-
-1. Open the app's Settings button, enter `http://YOUR-MAC.local:8080` or the Mac's private IPv4 address, and connect.
-2. Allow local network and camera access if prompted. Camera images go through the Mac to OpenAI for Astra perception.
-3. Tap an object or draw around it. The selection's exact source image and LiDAR snapshot stay paired while Astra identifies its outline.
-4. Once remembered, move the object about 20–30 cm. Red marks its old place and green follows its current position.
-5. Test leaving the frame and returning, then restoring its original position. Record actual results separately from build/test success.
-
-The connection is restored on app launch. Disconnect clears the saved address. Reconnecting clears the selection; reselect after a service restart.
-
-Current images have a 960-pixel long edge. At most one request is active, with a 0.5-second minimum sampling interval. Provider requests use `gpt-6-astra` with `reasoning.effort=low`; the phone allows 25 seconds for transport and retains the exact request source for up to 30 seconds. An old response can build the original reference from its own depth; it can never be drawn directly as a fresh screen overlay. Local tracking advances through a bounded camera history and expires without renewed Astra authority after 10 seconds from the last confirmed source.
-
-If the phone cannot reach `/health`, check the network first. Shared Wi-Fi filtered client traffic in earlier testing; connecting the Mac to the iPhone's Personal Hotspot worked. Reconnect with the Mac's new address after changing networks.
+The default frame long edge is 960 pixels. The phone has one active request, a 25-second transport deadline, and preserves the exact image/depth source for up to 30 seconds. Old image boxes are never drawn directly on a new frame.

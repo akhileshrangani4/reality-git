@@ -11,13 +11,15 @@ public struct FrameRequest: Codable, Equatable, Sendable {
     public let seedRect: [Double]?
     public let isReference: Bool
     public let seedPoint: [Double]?
+    public let modelID: String?
 
-    public init(key: ObservationKey, jpeg: Data, seedRect: [Double]? = nil, isReference: Bool = false, seedPoint: [Double]? = nil) {
+    public init(key: ObservationKey, jpeg: Data, seedRect: [Double]? = nil, isReference: Bool = false, seedPoint: [Double]? = nil, modelID: String? = nil) {
         self.key = key
         self.jpeg = jpeg
         self.seedRect = seedRect
         self.isReference = isReference
         self.seedPoint = seedPoint
+        self.modelID = modelID
     }
 }
 
